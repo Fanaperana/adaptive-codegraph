@@ -1,0 +1,37 @@
+[package]
+name = "adaptive-codegraph-core"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+fastembed = ["dep:fastembed"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+bincode = { workspace = true }
+toml = { workspace = true }
+petgraph = { workspace = true }
+blake3 = { workspace = true }
+ahash = { workspace = true }
+tantivy = { workspace = true }
+hnsw_rs = { workspace = true }
+tree-sitter = { workspace = true }
+tree-sitter-language = { workspace = true }
+ignore = { workspace = true }
+globset = { workspace = true }
+gix = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+rayon = { workspace = true }
+tracing = { workspace = true }
+regex-lite = { workspace = true }
+streaming-iterator = { workspace = true }
+
+[dependencies.fastembed]
+version = "4"
+optional = true
+
+[dev-dependencies]
+tempfile = "3"

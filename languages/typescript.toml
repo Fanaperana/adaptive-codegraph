@@ -1,0 +1,4 @@
+id = "typescript"
+name = "TypeScript"
+extensions = ["ts", "tsx"]
+grammar = "builtin"

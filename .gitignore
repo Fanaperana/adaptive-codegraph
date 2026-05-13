@@ -1,0 +1,6 @@
+/target
+/.mie-codegraph
+.adaptive-codegraph/
+*.bin
+.fastembed_cache/
+.cache/

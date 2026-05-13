@@ -1,0 +1,12 @@
+[package]
+name = "adaptive-codegraph-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+adaptive-codegraph-core = { path = "../core" }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = { workspace = true }
+serde_json = { workspace = true }

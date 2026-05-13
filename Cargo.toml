@@ -1,0 +1,79 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/cli",
+    "crates/mcp",
+    "crates/daemon",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/mieweb/adaptive-codegraph"
+
+[workspace.dependencies]
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+toml = "0.8"
+
+# Graph
+petgraph = "0.7"
+
+# Hashing
+blake3 = "1"
+ahash = "0.8"
+
+# Search
+tantivy = "0.22"
+
+# Vectors / embeddings
+hnsw_rs = "0.3"
+fastembed = { version = "4" }
+
+# Tree-sitter
+tree-sitter = "0.24"
+tree-sitter-language = "0.1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Async / IO
+tokio = { version = "1", features = ["full"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# File walking
+ignore = "0.4"
+globset = "0.4"
+
+# Git
+gix = { version = "0.68", default-features = false, features = ["revision"] }
+
+# Regex (lightweight)
+regex-lite = "0.1"
+streaming-iterator = "0.1"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Parallelism
+rayon = "1"
+
+# File watching
+notify = "7"
+notify-debouncer-mini = "0.5"
+
+# MCP / JSON-RPC
+rmcp = { version = "0.1", features = ["server", "transport-io"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

@@ -1,0 +1,4 @@
+id = "go"
+name = "Go"
+extensions = ["go"]
+grammar = "builtin"

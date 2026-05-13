@@ -1,0 +1,4 @@
+id = "rust"
+name = "Rust"
+extensions = ["rs"]
+grammar = "builtin"
