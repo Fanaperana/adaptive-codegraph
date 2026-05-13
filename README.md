@@ -1,18 +1,86 @@
-# adaptive-codegraph
+<div align="center">
 
-Language-agnostic code graph indexer, search engine, and MCP server.
+# 🧬 adaptive-codegraph
 
-> A rewrite of [mie-codegraph](../mie-codegraph/) that replaces hardcoded
-> language extractors with **tree-sitter query files** — add a new language by
-> dropping a `.toml` + `.scm` file into `languages/`, no Rust code changes needed.
+**Language-agnostic code graph indexer, search engine, and MCP server**
 
-## Architecture
+[![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![MCP](https://img.shields.io/badge/MCP-2024--11--05-blueviolet)](https://modelcontextprotocol.io/)
+[![tree-sitter](https://img.shields.io/badge/tree--sitter-0.25-green)](https://tree-sitter.github.io/)
+
+*Add a new language by dropping a `.toml` + `.scm` file — no Rust code changes needed.*
+
+[Quick Start](#-quick-start) · [Adding a Language](#-adding-a-new-language) · [MCP Tools](#%EF%B8%8F-mcp-tools) · [CLI](#-cli-usage) · [How It Works](#%EF%B8%8F-architecture)
+
+</div>
+
+---
+
+## 💡 Why?
+
+A rewrite of [mie-codegraph](https://github.com/mieweb/mie-codegraph) that replaces **hardcoded per-language extractors** with **tree-sitter query files**. The result:
+
+| | mie-codegraph | adaptive-codegraph |
+|---|---|---|
+| Add a language | Write a Rust extractor (~200 LOC) | Drop 2 `.scm` files + 1 `.toml` |
+| Extraction engine | Mixed tree-sitter + regex | Pure tree-sitter queries |
+| Symbol/Edge kinds | Rust enums (recompile to add) | **Strings** (no recompile) |
+| Language detection | Hardcoded | **Auto-detect** from marker files |
+| Plugin edges | Hardcoded patterns | **Regex plugin system** |
+| WebChart-specific | Yes | **Generic** — works on any codebase |
+
+## 📊 Status
+
+| Component | Status |
+|-----------|--------|
+| Core library (extract, store, search, embed) | ✅ Complete |
+| CLI (index, search, callers, callees, neighborhood) | ✅ Complete |
+| MCP server (JSON-RPC 2.0 over stdio, 8 tools) | ✅ Complete |
+| Built-in grammars (C, JS, Rust, Python, TypeScript, Go) | ✅ Complete |
+| Fastembed semantic search (optional) | 🔨 Feature flag |
+| Daemon (file-watching incremental reindex) | 🔨 Skeleton |
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- **Rust 1.75+** (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
+
+### Build & Index
+
+```bash
+# Clone
+git clone https://github.com/Fanaperana/adaptive-codegraph.git
+cd adaptive-codegraph
+
+# Build
+cargo build --release
+
+# Index a project
+./target/release/adaptive-codegraph --base /path/to/project index
+
+# Search
+./target/release/adaptive-codegraph --base /path/to/project search "handle_request"
+```
+
+### With Fastembed (Transformer Embeddings)
+
+```bash
+cargo build --release --features fastembed
+```
+
+Adds BGE-small-en-v1.5 (~33MB model) for high-quality semantic search.
+
+---
+
+## 🏗️ Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     adaptive-codegraph                       │
 ├─────────┬─────────┬───────────┬────────────────────────────┤
-│  CLI    │  MCP    │  Daemon   │  (future: LSP, web UI)     │
+│   CLI   │   MCP   │  Daemon   │  (future: LSP, web UI)     │
 ├─────────┴─────────┴───────────┴────────────────────────────┤
 │                        Core Library                         │
 │  ┌──────────┐ ┌──────────┐ ┌────────────┐ ┌────────────┐  │
@@ -26,92 +94,75 @@ Language-agnostic code graph indexer, search engine, and MCP server.
 ├─────────────────────────────────────────────────────────────┤
 │                    Language Definitions                      │
 │  languages/*.toml + languages/queries/*.scm                 │
-│  (Python, Rust, C, TypeScript, Go, Java, ...)               │
+│  (C, JavaScript, Rust, Python, TypeScript, Go, ...)         │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Key Design Decisions
+### Key Design Decisions
 
 | Decision | Rationale |
 |----------|-----------|
 | **String-based SymbolKind/EdgeKind** | No enum changes when adding a language |
 | **Tree-sitter `.scm` queries** | Add a language by writing query files, not Rust code |
 | **Auto-detect languages** | Scan marker files + extensions to know what to index |
-| **BLAKE3 symbol IDs** | Stable, deterministic, fast hashing |
+| **BLAKE3 symbol IDs** | Stable, deterministic, content-addressable hashing |
 | **Tantivy BM25** | Full-text search over names, fqnames, signatures, paths |
 | **HNSW vectors** | Semantic search with fastembed (optional) or hash fallback |
-| **Plugin system** | Custom edge patterns via regex (Django routes, WCGetLayout, etc.) |
+| **Plugin system** | Custom edge patterns via regex (Django routes, etc.) |
 | **Git-aware incremental** | Only re-extract changed files since last indexed HEAD |
 
-## Workspace Layout
+---
 
-```
-adaptive-codegraph/
-├── Cargo.toml              # Workspace root
-├── crates/
-│   ├── core/               # Core library (extract, store, search, embed, ...)
-│   ├── cli/                # Command-line interface
-│   ├── mcp/                # MCP server (stdio)
-│   └── daemon/             # File-watching daemon
-└── languages/
-    ├── python.toml          # Language definitions
-    ├── rust.toml
-    ├── c.toml
-    ├── typescript.toml
-    ├── go.toml
-    └── queries/
-        ├── python.scm       # Symbol extraction queries
-        ├── python_edges.scm  # Edge extraction queries
-        ├── rust.scm
-        ├── rust_edges.scm
-        ├── c.scm
-        ├── c_edges.scm
-        ├── typescript.scm
-        ├── typescript_edges.scm
-        ├── go.scm
-        └── go_edges.scm
+## 🌐 Adding a New Language
+
+Three files. Zero Rust changes.
+
+### 1. Language definition — `languages/<lang>.toml`
+
+```toml
+id = "ruby"
+name = "Ruby"
+extensions = ["rb"]
+grammar = "builtin"
 ```
 
-## Building
+### 2. Symbol extraction — `languages/queries/<lang>.scm`
 
-```bash
-# Standard build (BLAKE3 hash embeddings)
-cargo build --release
+```scheme
+;; Methods
+(method name: (identifier) @symbol.name) @symbol.def
 
-# With transformer embeddings (BGE-small-en-v1.5)
-cargo build --release --features fastembed
+;; Classes
+(class name: (constant) @symbol.name) @symbol.def
 ```
 
-## Adding a New Language
+### 3. Edge extraction — `languages/queries/<lang>_edges.scm`
 
-1. Create `languages/<lang>.toml`:
-   ```toml
-   id = "ruby"
-   name = "Ruby"
-   extensions = ["rb"]
-   grammar = "builtin"
-   ```
+```scheme
+;; Function calls
+(call method: (identifier) @call.name)
 
-2. Create `languages/queries/<lang>.scm` (symbol extraction):
-   ```scheme
-   (method name: (identifier) @symbol.name) @symbol.def
-   (class name: (constant) @symbol.name) @symbol.def
-   ```
+;; Imports
+(call method: (identifier) @import.path
+  (#eq? @import.path "require"))
+```
 
-3. Create `languages/queries/<lang>_edges.scm` (edge extraction):
-   ```scheme
-   (call method: (identifier) @call.name)
-   (call receiver: (identifier) @import.path)
-   ```
+### Built-in Languages
 
-4. Add the tree-sitter grammar crate to `Cargo.toml` dependencies.
+| Language | Grammar | Extensions |
+|----------|---------|------------|
+| 🇨 C | tree-sitter-c | `.c`, `.h` |
+| 📜 JavaScript | tree-sitter-javascript | `.js`, `.jsx`, `.mjs` |
+| 🦀 Rust | tree-sitter-rust | `.rs` |
+| 🐍 Python | tree-sitter-python | `.py` |
+| 🔷 TypeScript | tree-sitter-typescript | `.ts`, `.tsx` |
+| 🐹 Go | tree-sitter-go | `.go` |
 
-That's it — no Rust code changes needed for the extraction logic.
+---
 
-## Custom Edge Patterns (Plugins)
+## 🔌 Custom Edge Patterns (Plugins)
 
-For domain-specific edges that tree-sitter queries can't capture (e.g.,
-framework routing, layout rendering), use the plugin system:
+For domain-specific edges that tree-sitter queries can't capture (framework routing, layout rendering, etc.):
 
 ```rust
 use adaptive_codegraph_core::extract::plugin::RegexEdgePattern;
@@ -125,60 +176,93 @@ let pattern = RegexEdgePattern {
 };
 ```
 
-## CLI Usage
+---
+
+## 🛠️ MCP Tools
+
+The MCP server exposes these tools over JSON-RPC 2.0 (stdio):
+
+| Tool | Description |
+|------|-------------|
+| `search` | BM25 full-text search over symbols |
+| `semantic_search` | Vector similarity search (fastembed) |
+| `find_symbol` | Look up symbol by name substring |
+| `get_symbol` | Get symbol details by ID |
+| `find_callers` | Functions that call a given symbol |
+| `find_callees` | Functions called by a given symbol |
+| `expand_neighborhood` | BFS subgraph around a symbol |
+| `index` | Full index rebuild |
+| `index_status` | Report index state and staleness |
+
+### VS Code / Copilot Configuration
+
+Add to `.vscode/settings.json`:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "adaptive-codegraph": {
+        "command": "/path/to/adaptive-codegraph-mcp",
+        "args": ["--base", "${workspaceFolder}"]
+      }
+    }
+  }
+}
+```
+
+---
+
+## 💻 CLI Usage
 
 ```bash
 # Full index
 adaptive-codegraph --base /path/to/project index
 
-# Search
-adaptive-codegraph search "parse_config"
+# Search symbols
+adaptive-codegraph --base . search "parse_config"
 
-# Find callers
-adaptive-codegraph callers "handle_request"
+# Find callers of a function
+adaptive-codegraph --base . callers "handle_request"
 
-# BFS neighborhood
-adaptive-codegraph neighborhood "main" --depth 3
+# Find callees
+adaptive-codegraph --base . callees "main"
+
+# BFS neighborhood (depth 3)
+adaptive-codegraph --base . neighborhood "main" --depth 3
 
 # List detected languages
-adaptive-codegraph languages
+adaptive-codegraph --base . languages
+
+# Check index status
+adaptive-codegraph --base . status
 ```
 
-## Project Configuration
+---
 
-Place a `.adaptive-codegraph.toml` in your project root to control indexing.
-If the file is absent, the tool auto-detects languages from marker files
-(e.g. `Cargo.toml` → Rust, `package.json` → JavaScript) and indexes the
-entire project root.
+## ⚙️ Configuration
 
-### Minimal Example
+Place `.adaptive-codegraph.toml` in your project root. If absent, languages are auto-detected.
+
+### Minimal
 
 ```toml
 roots = ["src"]
 ```
 
-### Full Example
+### Full
 
 ```toml
-# Directories to index (relative to project root). Default: ["."]
 roots = ["src", "lib"]
-
-# Where to store the index data. Default: ".adaptive-codegraph"
 index_dir = ".adaptive-codegraph"
-
-# Glob patterns to exclude (applied to file paths during walk)
 exclude = [
   "**/.git/**",
   "**/node_modules/**",
   "**/target/**",
   "**/build/**",
   "**/*.min.js",
-  "**/vendor/**",
-  "**/dist/**",
 ]
 
-# Explicit language definitions (override auto-detection).
-# Omit this section to let the tool auto-detect from marker files.
 [[languages]]
 id = "c"
 extensions = ["c", "h"]
@@ -188,18 +272,18 @@ id = "javascript"
 extensions = ["js"]
 ```
 
-### Config Fields
+### Config Reference
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `roots` | `string[]` | `["."]` | Directories to index (relative to project root) |
-| `index_dir` | `string` | `".adaptive-codegraph"` | Where index data is stored |
-| `exclude` | `string[]` | *(common patterns)* | Glob patterns to skip during file walk |
-| `languages` | `table[]` | *(auto-detected)* | Explicit language list; each entry needs `id` and `extensions` |
+| `roots` | `string[]` | `["."]` | Directories to index |
+| `index_dir` | `string` | `".adaptive-codegraph"` | Index storage location |
+| `exclude` | `string[]` | *(common patterns)* | Glob patterns to skip |
+| `languages` | `table[]` | *(auto-detected)* | Explicit language list |
 
 ### Language Auto-Detection
 
-When `languages` is omitted, the tool scans the project root for marker files:
+When `languages` is omitted, the tool scans for marker files:
 
 | Language | Marker Files | Extensions |
 |----------|-------------|------------|
@@ -212,33 +296,39 @@ When `languages` is omitted, the tool scans the project root for marker files:
 | Java | `pom.xml`, `build.gradle` | `.java` |
 | Ruby | `Gemfile` | `.rb` |
 | C# | `*.csproj`, `*.sln` | `.cs` |
-| C++ | `CMakeLists.txt` | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx` |
+| C++ | `CMakeLists.txt` | `.cpp`, `.cc`, `.cxx`, `.hpp` |
 
-### Languages Directory
+---
 
-The project also needs a `languages/` directory (in the project root or
-symlinked) containing the tree-sitter query files. See
-[Adding a New Language](#adding-a-new-language) above.
+## 📁 Project Layout
 
-## MCP Tools (Planned)
+```
+adaptive-codegraph/
+├── Cargo.toml              # Workspace root
+├── crates/
+│   ├── core/               # Core library (extract, store, search, embed)
+│   ├── cli/                # Command-line interface (clap)
+│   ├── mcp/                # MCP server (JSON-RPC 2.0 over stdio)
+│   └── daemon/             # File-watching daemon (notify-rs)
+└── languages/
+    ├── c.toml              # Language definitions
+    ├── javascript.toml
+    ├── rust.toml
+    ├── python.toml
+    ├── typescript.toml
+    ├── go.toml
+    └── queries/
+        ├── c.scm           # Symbol extraction queries
+        ├── c_edges.scm     # Edge extraction queries
+        ├── javascript.scm
+        ├── javascript_edges.scm
+        ├── rust.scm
+        ├── rust_edges.scm
+        └── ...
+```
 
-| Tool | Description |
-|------|-------------|
-| `search` | BM25 text search over symbols |
-| `semantic_search` | Vector similarity search (fastembed) |
-| `find_symbol` | Look up symbol by name |
-| `find_callers` | Functions that call a symbol |
-| `find_callees` | Functions called by a symbol |
-| `expand_neighborhood` | BFS subgraph around a symbol |
-| `index` | Full rebuild |
-| `reindex_changed` | Incremental git-aware reindex |
-| `index_status` | Report index state |
+---
 
-## Status
+## 📄 License
 
-✅ **Core library** — extraction, store, search, and embedding all working.
-✅ **CLI** — fully wired with index, search, find, callers, callees, neighborhood, status, languages.
-✅ **MCP server** — JSON-RPC 2.0 over stdio with 8 tools (search, find_symbol, get_symbol, find_callers, find_callees, expand_neighborhood, index, index_status).
-✅ **Tree-sitter grammars** — built-in support for C, JavaScript, Rust, Python, TypeScript, Go.
-🔨 **Daemon** — file-watching incremental reindex (skeleton).
-🔨 **Semantic search** — fastembed integration (optional feature flag).
+[MIT](LICENSE)
