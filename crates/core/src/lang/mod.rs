@@ -27,22 +27,30 @@ const LANGUAGES_DIR: &str = "languages";
 
 /// Build an extractor registry from the languages/ directory.
 ///
-/// Each `.toml` file in languages/ defines a language. The corresponding
-/// `.scm` files in languages/queries/ define the extraction queries.
+/// Search order for the `languages/` directory:
+/// 1. Next to the running binary (e.g. `target/release/languages/`)
+/// 2. In the project being indexed (`base/languages/`)
+///
+/// This means you do NOT need to symlink `languages/` into every project.
 pub fn build_registry(base: &Path) -> anyhow::Result<ExtractorRegistry> {
     let mut registry = ExtractorRegistry::new();
-    let lang_dir = base.join(LANGUAGES_DIR);
 
-    if !lang_dir.exists() {
-        tracing::warn!("No languages/ directory found at {}", lang_dir.display());
+    // Try to find languages/ next to the binary first
+    let lang_dir = find_languages_dir(base);
+    let Some(lang_dir) = lang_dir else {
+        tracing::warn!("No languages/ directory found (checked binary dir and {base})", base = base.display());
         return Ok(registry);
-    }
+    };
+    tracing::info!("Using languages/ from {}", lang_dir.display());
+
+    // The base for resolving query file paths is the parent of languages/
+    let lang_base = lang_dir.parent().unwrap_or(base);
 
     for entry in std::fs::read_dir(&lang_dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.extension().map(|e| e == "toml").unwrap_or(false) {
-            match load_language(&path, base) {
+            match load_language(&path, lang_base) {
                 Ok((ext, extensions)) => {
                     tracing::info!("Loaded language: {}", ext.language());
                     let ext_refs: Vec<&str> = extensions.iter().map(|s| s.as_str()).collect();
@@ -56,6 +64,38 @@ pub fn build_registry(base: &Path) -> anyhow::Result<ExtractorRegistry> {
     }
 
     Ok(registry)
+}
+
+/// Find the `languages/` directory by checking (in order):
+/// 1. Next to the current executable
+/// 2. In the project base directory
+fn find_languages_dir(base: &Path) -> Option<PathBuf> {
+    // Check next to the binary
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let candidate = exe_dir.join(LANGUAGES_DIR);
+            if candidate.is_dir() {
+                return Some(candidate);
+            }
+            // Also check one level up (e.g. target/release/../.. = workspace root)
+            if let Some(parent) = exe_dir.parent() {
+                if let Some(grandparent) = parent.parent() {
+                    let candidate = grandparent.join(LANGUAGES_DIR);
+                    if candidate.is_dir() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+    }
+
+    // Fall back to the project directory
+    let candidate = base.join(LANGUAGES_DIR);
+    if candidate.is_dir() {
+        return Some(candidate);
+    }
+
+    None
 }
 
 /// Load a single language definition and create its extractor.
@@ -112,25 +152,27 @@ fn load_language(toml_path: &Path, base: &Path) -> anyhow::Result<(TreeSitterExt
 }
 
 /// Resolve a grammar reference to a tree-sitter Language.
-///
-/// Currently supports "builtin" only. Future: load from .so/.dylib files.
 fn resolve_grammar(grammar: &str, lang_id: &str) -> anyhow::Result<tree_sitter::Language> {
     if grammar == "builtin" || grammar.is_empty() {
-        // Return a placeholder — actual grammar loading depends on which
-        // tree-sitter-* crates are compiled in. This will be wired up
-        // when specific language crates are added as dependencies.
+        match lang_id {
+            "c" => Ok(tree_sitter_c::LANGUAGE.into()),
+            "javascript" => Ok(tree_sitter_javascript::LANGUAGE.into()),
+            "rust" => Ok(tree_sitter_rust::LANGUAGE.into()),
+            "python" => Ok(tree_sitter_python::LANGUAGE.into()),
+            "go" => Ok(tree_sitter_go::LANGUAGE.into()),
+            "typescript" => Ok(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
+            "tsx" => Ok(tree_sitter_typescript::LANGUAGE_TSX.into()),
+            _ => anyhow::bail!(
+                "No built-in grammar for '{}'. Add a tree-sitter-{} crate.",
+                lang_id,
+                lang_id
+            ),
+        }
+    } else {
         anyhow::bail!(
-            "Built-in grammar for '{}' not yet compiled in. \
-             Add the tree-sitter-{} crate as a dependency.",
+            "External grammar loading not yet implemented for '{}': {}",
             lang_id,
-            lang_id
+            grammar
         );
     }
-
-    // Future: load from shared library path
-    anyhow::bail!(
-        "External grammar loading not yet implemented for '{}': {}",
-        lang_id,
-        grammar
-    );
 }

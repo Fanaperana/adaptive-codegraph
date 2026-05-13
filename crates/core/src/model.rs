@@ -159,6 +159,14 @@ pub struct Edge {
     pub kind: String,
 }
 
+/// An edge whose target hasn't been resolved to a SymbolId yet.
+#[derive(Clone, Debug)]
+pub struct UnresolvedEdge {
+    pub from: SymbolId,
+    pub to_name: String,
+    pub kind: String,
+}
+
 // ── Extraction result ───────────────────────────────────────────────────
 
 /// The output of parsing a single file: symbols found + edges discovered.
@@ -166,6 +174,7 @@ pub struct Edge {
 pub struct ExtractionResult {
     pub symbols: Vec<Symbol>,
     pub edges: Vec<Edge>,
+    pub unresolved_edges: Vec<UnresolvedEdge>,
 }
 
 impl ExtractionResult {
@@ -178,11 +187,9 @@ impl ExtractionResult {
     }
 
     pub fn add_edge(&mut self, from: SymbolId, to_name: &str, kind: &str) {
-        // Edges with unresolved `to` targets use a placeholder ID.
-        // These get resolved during the merge phase when all symbols are known.
-        self.edges.push(Edge {
+        self.unresolved_edges.push(UnresolvedEdge {
             from,
-            to: SymbolId::new("_unresolved", kind, to_name, ""),
+            to_name: to_name.to_string(),
             kind: kind.to_string(),
         });
     }
@@ -198,6 +205,7 @@ impl ExtractionResult {
     pub fn merge(&mut self, other: ExtractionResult) {
         self.symbols.extend(other.symbols);
         self.edges.extend(other.edges);
+        self.unresolved_edges.extend(other.unresolved_edges);
     }
 }
 

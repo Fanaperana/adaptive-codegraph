@@ -17,6 +17,9 @@ pub struct DetectedLanguage {
 /// Project configuration — either auto-detected or from config file.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
+    /// Base directory for the project (set at load time, not serialized).
+    #[serde(skip)]
+    pub base: Option<PathBuf>,
     /// Root directories to index (relative to base).
     pub roots: Vec<PathBuf>,
     /// Glob patterns to exclude.
@@ -47,6 +50,7 @@ pub fn list_builtin_languages() -> Vec<BuiltinLangInfo> {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            base: None,
             roots: vec![PathBuf::from(".")],
             exclude: vec![
                 "**/.git/**".into(),
@@ -144,6 +148,7 @@ impl Config {
         if config_path.exists() {
             let text = std::fs::read_to_string(&config_path)?;
             let mut cfg: Config = toml::from_str(&text)?;
+            cfg.base = Some(base.to_path_buf());
             if cfg.languages.is_empty() {
                 cfg.languages = detect_languages(base);
             }
@@ -152,6 +157,7 @@ impl Config {
 
         // Auto-detect everything
         let mut cfg = Config::default();
+        cfg.base = Some(base.to_path_buf());
         cfg.languages = detect_languages(base);
 
         // Auto-detect roots: look for src/, lib/, app/ directories

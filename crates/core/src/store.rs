@@ -80,6 +80,16 @@ impl Store {
         results
     }
 
+    /// Find symbols whose name matches `needle` exactly (case-insensitive).
+    pub fn find_by_name_exact(&self, needle: &str) -> Vec<&Symbol> {
+        let needle_lower = needle.to_lowercase();
+        if let Some(ids) = self.by_name_ci.get(&needle_lower) {
+            ids.iter().filter_map(|id| self.get(id)).collect()
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Find symbols by name, filtered by kind and/or language.
     pub fn find_filtered(
         &self,

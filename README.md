@@ -144,6 +144,82 @@ adaptive-codegraph neighborhood "main" --depth 3
 adaptive-codegraph languages
 ```
 
+## Project Configuration
+
+Place a `.adaptive-codegraph.toml` in your project root to control indexing.
+If the file is absent, the tool auto-detects languages from marker files
+(e.g. `Cargo.toml` → Rust, `package.json` → JavaScript) and indexes the
+entire project root.
+
+### Minimal Example
+
+```toml
+roots = ["src"]
+```
+
+### Full Example
+
+```toml
+# Directories to index (relative to project root). Default: ["."]
+roots = ["src", "lib"]
+
+# Where to store the index data. Default: ".adaptive-codegraph"
+index_dir = ".adaptive-codegraph"
+
+# Glob patterns to exclude (applied to file paths during walk)
+exclude = [
+  "**/.git/**",
+  "**/node_modules/**",
+  "**/target/**",
+  "**/build/**",
+  "**/*.min.js",
+  "**/vendor/**",
+  "**/dist/**",
+]
+
+# Explicit language definitions (override auto-detection).
+# Omit this section to let the tool auto-detect from marker files.
+[[languages]]
+id = "c"
+extensions = ["c", "h"]
+
+[[languages]]
+id = "javascript"
+extensions = ["js"]
+```
+
+### Config Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `roots` | `string[]` | `["."]` | Directories to index (relative to project root) |
+| `index_dir` | `string` | `".adaptive-codegraph"` | Where index data is stored |
+| `exclude` | `string[]` | *(common patterns)* | Glob patterns to skip during file walk |
+| `languages` | `table[]` | *(auto-detected)* | Explicit language list; each entry needs `id` and `extensions` |
+
+### Language Auto-Detection
+
+When `languages` is omitted, the tool scans the project root for marker files:
+
+| Language | Marker Files | Extensions |
+|----------|-------------|------------|
+| C | `Makefile`, `CMakeLists.txt` | `.c`, `.h` |
+| Rust | `Cargo.toml` | `.rs` |
+| Python | `pyproject.toml`, `setup.py`, `requirements.txt` | `.py` |
+| JavaScript | `package.json` | `.js`, `.mjs`, `.cjs` |
+| TypeScript | `tsconfig.json` | `.ts`, `.tsx` |
+| Go | `go.mod` | `.go` |
+| Java | `pom.xml`, `build.gradle` | `.java` |
+| Ruby | `Gemfile` | `.rb` |
+| C# | `*.csproj`, `*.sln` | `.cs` |
+| C++ | `CMakeLists.txt` | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hxx` |
+
+### Languages Directory
+
+The project also needs a `languages/` directory (in the project root or
+symlinked) containing the tree-sitter query files. See
+[Adding a New Language](#adding-a-new-language) above.
+
 ## MCP Tools (Planned)
 
 | Tool | Description |
@@ -160,6 +236,9 @@ adaptive-codegraph languages
 
 ## Status
 
-🔨 **In development** — core library is structurally complete, CLI/MCP/daemon
-are skeletons ready to be wired up. Tree-sitter grammar integration pending
-(need to add specific `tree-sitter-*` crate dependencies).
+✅ **Core library** — extraction, store, search, and embedding all working.
+✅ **CLI** — fully wired with index, search, find, callers, callees, neighborhood, status, languages.
+✅ **MCP server** — JSON-RPC 2.0 over stdio with 8 tools (search, find_symbol, get_symbol, find_callers, find_callees, expand_neighborhood, index, index_status).
+✅ **Tree-sitter grammars** — built-in support for C, JavaScript, Rust, Python, TypeScript, Go.
+🔨 **Daemon** — file-watching incremental reindex (skeleton).
+🔨 **Semantic search** — fastembed integration (optional feature flag).

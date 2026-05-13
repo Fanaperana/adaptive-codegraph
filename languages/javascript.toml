@@ -1,0 +1,4 @@
+id = "javascript"
+name = "JavaScript"
+extensions = ["js", "jsx", "mjs"]
+grammar = "builtin"

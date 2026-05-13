@@ -1,7 +1,10 @@
 ; C symbol extraction queries
 
-; Function definitions
+; Function definitions (direct return type)
 (function_definition declarator: (function_declarator declarator: (identifier) @symbol.name)) @symbol.def
+
+; Function definitions (pointer return type)
+(function_definition declarator: (pointer_declarator declarator: (function_declarator declarator: (identifier) @symbol.name))) @symbol.def
 
 ; Struct definitions
 (struct_specifier name: (type_identifier) @symbol.name) @symbol.def

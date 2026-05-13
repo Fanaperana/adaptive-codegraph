@@ -41,7 +41,8 @@ pub fn full_index(
     registry: &ExtractorRegistry,
     plugins: &PluginRegistry,
 ) -> anyhow::Result<(Store, SearchIndex, VectorIndex)> {
-    let files = collect_files(config, registry)?;
+    let base = config.base.as_deref().unwrap_or(Path::new("."));
+    let files = collect_files(config, registry, base)?;
     tracing::info!("Collected {} files to index", files.len());
 
     // Extract in parallel
@@ -74,10 +75,33 @@ pub fn full_index(
         store.insert_symbol(sym.clone());
     }
 
-    // Resolve and insert edges
+    // Resolve and insert edges: map unresolved callee names to actual symbols
+    let mut resolved_count = 0usize;
+    for ue in &all_results.unresolved_edges {
+        let candidates = store.find_by_name_exact(&ue.to_name);
+        if let Some(target) = candidates.first() {
+            let resolved = crate::model::Edge {
+                from: ue.from.clone(),
+                to: target.id.clone(),
+                kind: ue.kind.clone(),
+            };
+            if store.insert_edge(resolved) {
+                resolved_count += 1;
+            }
+        }
+    }
+
+    // Also insert pre-resolved edges
     for edge in &all_results.edges {
         store.insert_edge(edge.clone());
     }
+
+    tracing::info!(
+        "Edges: {} unresolved, {} resolved, {} pre-resolved",
+        all_results.unresolved_edges.len(),
+        resolved_count,
+        all_results.edges.len()
+    );
 
     tracing::info!(
         "Graph: {} symbols, {} edges",
@@ -86,8 +110,8 @@ pub fn full_index(
     );
 
     // Build search index
-    let index_dir = Path::new(&config.index_dir);
-    let search = SearchIndex::open(index_dir)?;
+    let index_dir = base.join(&config.index_dir);
+    let search = SearchIndex::open(&index_dir)?;
     let mut writer = search.writer(50_000_000)?;
     for sym in &all_results.symbols {
         search.index_symbol(
@@ -135,7 +159,7 @@ pub fn full_index(
         ),
         file_count: files.len(),
     };
-    std::fs::create_dir_all(index_dir)?;
+    std::fs::create_dir_all(&index_dir)?;
     state.save(&index_dir.join("state.json"))?;
     store.save(&index_dir.join("graph.bin"))?;
     vectors.save(&index_dir.join("vectors.bin"))?;
@@ -144,11 +168,12 @@ pub fn full_index(
 }
 
 /// Collect all indexable files from configured roots.
-fn collect_files(config: &Config, registry: &ExtractorRegistry) -> anyhow::Result<Vec<PathBuf>> {
+fn collect_files(config: &Config, registry: &ExtractorRegistry, base: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
     for root in &config.roots {
-        let walker = ignore::WalkBuilder::new(root)
+        let abs_root = base.join(root);
+        let walker = ignore::WalkBuilder::new(&abs_root)
             .hidden(true)
             .git_ignore(true)
             .build();
@@ -171,10 +196,10 @@ fn collect_files(config: &Config, registry: &ExtractorRegistry) -> anyhow::Resul
 
 /// Detect current git HEAD SHA.
 fn detect_git_head(config: &Config) -> Option<String> {
-    let root = config.roots.first()?;
+    let base = config.base.as_deref().unwrap_or(Path::new("."));
     let output = std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
-        .current_dir(root)
+        .current_dir(base)
         .output()
         .ok()?;
     if output.status.success() {

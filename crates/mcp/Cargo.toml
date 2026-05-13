@@ -3,9 +3,12 @@ name = "adaptive-codegraph-mcp"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "adaptive-codegraph-mcp"
+path = "src/main.rs"
+
 [dependencies]
 adaptive-codegraph-core = { path = "../core" }
-rmcp = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
