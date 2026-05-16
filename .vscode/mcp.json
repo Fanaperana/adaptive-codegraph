@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "adaptive-codegraph": {
+      "type": "stdio",
+      "command": "adaptive-codegraph-mcp",
+      "args": ["--base", "${workspaceFolder}"]
+    }
+  }
+}
