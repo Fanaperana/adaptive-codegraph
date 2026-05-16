@@ -11,7 +11,7 @@
 
 *Add a new language by dropping a `.toml` + `.scm` file — no Rust code changes needed.*
 
-[Quick Start](#-quick-start) · [Adding a Language](#-adding-a-new-language) · [MCP Tools](#%EF%B8%8F-mcp-tools) · [CLI](#-cli-usage) · [How It Works](#%EF%B8%8F-architecture)
+[How It Works](#-how-it-works-under-the-hood) · [Why Not grep?](#-why-not-just-grep) · [Quick Start](#-quick-start) · [Adding a Language](#-adding-a-new-language) · [MCP Tools](#%EF%B8%8F-mcp-tools) · [CLI](#-cli-usage) · [Architecture](#%EF%B8%8F-architecture) · [Full Docs](DOCS.md)
 
 </div>
 
@@ -41,7 +41,88 @@ A similar implementation to [mie-codegraph](https://github.com/mieweb/mie-codegr
 | Fastembed semantic search (optional) | 🔨 Feature flag |
 | Daemon (file-watching incremental reindex) | 🔨 Skeleton |
 
-## 🚀 Quick Start
+## � How It Works Under the Hood
+
+adaptive-codegraph builds a **structural understanding** of your codebase, not just a text index. Here's what happens when you run `adaptive-codegraph index`:
+
+### 1. Parse — Tree-sitter turns source code into syntax trees
+
+Every source file is parsed with [tree-sitter](https://tree-sitter.github.io/), producing a concrete syntax tree (CST). This is a full structural parse — it knows the difference between a function *definition*, a function *call*, a *variable*, and a *string literal*.
+
+### 2. Extract — Query files pull out symbols and relationships
+
+Tree-sitter S-expression queries (`.scm` files) are run against the syntax tree to extract:
+
+- **Symbols** — function definitions, classes, structs, enums, modules, traits, interfaces, etc.
+- **Edges** — function calls, imports, inheritance, trait implementations, etc.
+
+Each symbol gets a **stable ID** computed via BLAKE3 hashing of its language, kind, fully-qualified name, and file path. This ID survives edits that don't rename or move the symbol.
+
+### 3. Build — A directed graph of your entire codebase
+
+All symbols become **nodes** and all relationships become **directed edges** in a [petgraph](https://docs.rs/petgraph) graph, with side-table indexes for O(1) lookup by ID, file path, and name. This gives you:
+
+- **"Who calls this function?"** → walk incoming edges
+- **"What does this function call?"** → walk outgoing edges
+- **"Show me everything connected to this symbol within 3 hops"** → BFS traversal
+
+### 4. Index — Full-text search with BM25 ranking
+
+Every symbol is indexed into a [Tantivy](https://github.com/quickwit-oss/tantivy) search engine across multiple fields (name, fully-qualified name, file path, signature). Queries are ranked using BM25 — the same algorithm used by Elasticsearch and Lucene — so a function *named* `parse_config` ranks higher than one that merely *contains* those words in a long path.
+
+### 5. Embed — Optional vector search for semantic matching
+
+Symbol names are embedded into vector space for similarity search:
+
+- **Default:** BLAKE3 hash-based embeddings (32-dim, fast, deterministic)
+- **With `fastembed`:** BGE-small-en-v1.5 transformer (384-dim, semantic understanding)
+
+With transformer embeddings, a search for `"authenticate user"` can match `login`, `verify_credentials`, and `check_password` even though the words don't overlap.
+
+### 6. Persist — Everything is saved for instant reloads
+
+The graph, search index, and vectors are serialized to `.adaptive-codegraph/` in the project root. Subsequent runs load the index in milliseconds. **Incremental reindexing** uses `git diff` to detect changed files and only re-processes those.
+
+---
+
+## 🆚 Why Not Just `grep`?
+
+`grep` searches text. adaptive-codegraph understands **code structure**.
+
+| | `grep` / `ripgrep` | adaptive-codegraph |
+|---|---|---|
+| **What it searches** | Raw text / regex patterns | Parsed symbols, relationships, graph structure |
+| **"Find the function `parse`"** | Matches every string containing "parse" — comments, variables, imports, documentation | Returns only the **function definition** named `parse` |
+| **"Who calls `handle_request`?"** | `grep handle_request` → hundreds of hits, including the definition itself, string literals, comments | `callers "handle_request"` → only the **actual call sites**, with the calling function name and file |
+| **"What does `main` depend on?"** | Not possible with grep | `callees "main"` → every function called by `main`, then `neighborhood "main" --depth 3` for the full dependency subgraph |
+| **Ranking** | No ranking — results are in file order | **BM25 relevance scoring** — best matches first |
+| **Semantic search** | Not possible | `"process authentication"` matches `login()`, `verify_token()` (with fastembed) |
+| **Understands language syntax** | No — treats code as plain text | Yes — knows that `def parse():` is a definition and `parse()` is a call |
+| **Cross-file relationships** | Manual — you grep, read the result, then grep again | Built-in — the graph connects symbols across all files automatically |
+| **Speed on repeated queries** | Re-scans files every time | Index once, query in milliseconds |
+
+### When grep is still the right tool
+
+- Searching for **arbitrary text** (log messages, string literals, comments)
+- One-off searches where you don't need an index
+- Searching non-code files (docs, configs, data files)
+
+### When adaptive-codegraph is better
+
+- Understanding **code structure** — what calls what, what depends on what
+- Navigating **large codebases** where grep returns too many irrelevant results
+- Powering **AI assistants** (via MCP) that need structural context, not just text matches
+- Finding **all callers** of a function across the entire project
+- Exploring the **dependency graph** around a symbol
+- **Semantic search** — finding code by meaning, not exact text
+
+---
+
+> 📖 **[Full documentation →](DOCS.md)** — CLI reference, MCP tool schemas, config options, data model, plugin system, and more.
+
+---
+
+## �🚀 Quick Start
 
 ### Prerequisites
 
@@ -80,13 +161,14 @@ A `.adaptive-codegraph/` folder will be created in the project root to store the
 > git config --global core.excludesFile ~/.gitignore
 > ```
 
-### With Fastembed (Transformer Embeddings)
+### With Fastembed (Recommended)
 
 ```bash
 cargo install --path crates/cli --features fastembed
+cargo install --path crates/mcp --features fastembed
 ```
 
-Adds BGE-small-en-v1.5 (~33MB model) for high-quality semantic search.
+Adds BGE-small-en-v1.5 (~33MB model, downloaded on first use) for **high-quality semantic search**. Without this, vector search falls back to BLAKE3 hash-based embeddings which only match similar *names*, not similar *meanings*. With fastembed, searching `"validate input"` can match `sanitize_params()`, `check_user_data()`, etc.
 
 ---
 
