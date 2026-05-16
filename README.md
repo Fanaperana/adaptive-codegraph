@@ -47,27 +47,43 @@ A similar implementation to [mie-codegraph](https://github.com/mieweb/mie-codegr
 
 - **Rust 1.75+** (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
 
-### Build & Index
+### Install Globally
 
 ```bash
-# Clone
+# Clone & install to ~/.cargo/bin (available system-wide)
 git clone https://github.com/Fanaperana/adaptive-codegraph.git
 cd adaptive-codegraph
+cargo install --path crates/cli
+cargo install --path crates/mcp
+```
 
-# Build
-cargo build --release
+Now you can use `adaptive-codegraph` and `adaptive-codegraph-mcp` from any project directory.
 
-# Index a project
-./target/release/adaptive-codegraph --base /path/to/project index
+### Usage
+
+```bash
+# Go to any project
+cd /path/to/your/project
+
+# Index the project (creates .adaptive-codegraph/ in the project root)
+adaptive-codegraph index
 
 # Search
-./target/release/adaptive-codegraph --base /path/to/project search "handle_request"
+adaptive-codegraph search "handle_request"
 ```
+
+A `.adaptive-codegraph/` folder will be created in the project root to store the index. You can optionally add a `.adaptive-codegraph.toml` config file to customize behavior.
+
+> **Tip:** Add `.adaptive-codegraph/` to your global gitignore so it's ignored across all projects:
+> ```bash
+> echo ".adaptive-codegraph/" >> ~/.gitignore
+> git config --global core.excludesFile ~/.gitignore
+> ```
 
 ### With Fastembed (Transformer Embeddings)
 
 ```bash
-cargo build --release --features fastembed
+cargo install --path crates/cli --features fastembed
 ```
 
 Adds BGE-small-en-v1.5 (~33MB model) for high-quality semantic search.
@@ -203,7 +219,7 @@ Add to `.vscode/settings.json`:
   "mcp": {
     "servers": {
       "adaptive-codegraph": {
-        "command": "/path/to/adaptive-codegraph-mcp",
+        "command": "adaptive-codegraph-mcp",
         "args": ["--base", "${workspaceFolder}"]
       }
     }
@@ -216,26 +232,34 @@ Add to `.vscode/settings.json`:
 ## 💻 CLI Usage
 
 ```bash
+# cd into any project, then:
+
 # Full index
-adaptive-codegraph --base /path/to/project index
+adaptive-codegraph index
 
 # Search symbols
-adaptive-codegraph --base . search "parse_config"
+adaptive-codegraph search "parse_config"
 
 # Find callers of a function
-adaptive-codegraph --base . callers "handle_request"
+adaptive-codegraph callers "handle_request"
 
 # Find callees
-adaptive-codegraph --base . callees "main"
+adaptive-codegraph callees "main"
 
 # BFS neighborhood (depth 3)
-adaptive-codegraph --base . neighborhood "main" --depth 3
+adaptive-codegraph neighborhood "main" --depth 3
 
 # List detected languages
-adaptive-codegraph --base . languages
+adaptive-codegraph languages
 
 # Check index status
-adaptive-codegraph --base . status
+adaptive-codegraph status
+```
+
+You can also specify a different project with `--base`:
+
+```bash
+adaptive-codegraph --base /path/to/other/project index
 ```
 
 ---
