@@ -122,27 +122,21 @@ The graph, search index, and vectors are serialized to `.adaptive-codegraph/` in
 
 ---
 
-## �🚀 Quick Start
+## 🚀 Quick Start
 
 ### Prerequisites
 
 - **Rust 1.75+** (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
 
-### Install Globally
+### Install
 
 ```bash
-# Clone & install to ~/.cargo/bin (available system-wide)
 git clone https://github.com/Fanaperana/adaptive-codegraph.git
 cd adaptive-codegraph
-cargo install --path crates/cli
-cargo install --path crates/mcp
-cargo install --path crates/daemon
-
-# Install language definitions (required for global usage)
-cp -a languages/ "$(dirname $(which adaptive-codegraph))"/languages/
+./install.sh
 ```
 
-Now you can use `adaptive-codegraph`, `adaptive-codegraph-mcp`, and `adaptive-codegraph-daemon` from any project directory.
+That's it. This builds and installs everything (CLI, MCP server, daemon, and language definitions) to `~/.cargo/bin/`.
 
 ### Usage
 
@@ -150,31 +144,19 @@ Now you can use `adaptive-codegraph`, `adaptive-codegraph-mcp`, and `adaptive-co
 # Go to any project
 cd /path/to/your/project
 
-# Index the project (creates .adaptive-codegraph/ in the project root)
+# Index the project
 adaptive-codegraph index
 
 # Search
 adaptive-codegraph search "handle_request"
 ```
 
-A `.adaptive-codegraph/` folder will be created in the project root to store the index. You can optionally add a `.adaptive-codegraph.toml` config file to customize behavior.
-
-> **Tip:** Add `.adaptive-codegraph/` to your global gitignore so it's ignored across all projects:
+> **Tip:** Add `.adaptive-codegraph/` to your global gitignore:
 > ```bash
 > echo ".adaptive-codegraph/" >> ~/.gitignore
 > git config --global core.excludesFile ~/.gitignore
 > ```
 
-### With Fastembed (Recommended)
-
-```bash
-cargo install --path crates/cli --features fastembed
-cargo install --path crates/mcp --features fastembed
-```
-
-Adds BGE-small-en-v1.5 (~33MB model, downloaded on first use) for **high-quality semantic search**. Without this, vector search falls back to BLAKE3 hash-based embeddings which only match similar *names*, not similar *meanings*. With fastembed, searching `"validate input"` can match `sanitize_params()`, `check_user_data()`, etc.
-
----
 
 ## 🏗️ Architecture
 
