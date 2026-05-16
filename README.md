@@ -290,20 +290,20 @@ The MCP server exposes these tools over JSON-RPC 2.0 (stdio):
 | `find_callees` | Functions called by a given symbol |
 | `expand_neighborhood` | BFS subgraph around a symbol |
 | `index` | Full index rebuild |
+| `incremental_index` | Re-process only changed files (git-aware) |
 | `index_status` | Report index state and staleness |
 
 ### VS Code / Copilot Configuration
 
-Add to `.vscode/settings.json`:
+Add a `.vscode/mcp.json` to your project:
 
 ```json
 {
-  "mcp": {
-    "servers": {
-      "adaptive-codegraph": {
-        "command": "adaptive-codegraph-mcp",
-        "args": ["--base", "${workspaceFolder}"]
-      }
+  "servers": {
+    "adaptive-codegraph": {
+      "type": "stdio",
+      "command": "adaptive-codegraph-mcp",
+      "args": ["--base", "${workspaceFolder}"]
     }
   }
 }
