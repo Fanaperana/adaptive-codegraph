@@ -136,9 +136,13 @@ git clone https://github.com/Fanaperana/adaptive-codegraph.git
 cd adaptive-codegraph
 cargo install --path crates/cli
 cargo install --path crates/mcp
+cargo install --path crates/daemon
+
+# Install language definitions (required for global usage)
+cp -a languages/ "$(dirname $(which adaptive-codegraph))"/languages/
 ```
 
-Now you can use `adaptive-codegraph` and `adaptive-codegraph-mcp` from any project directory.
+Now you can use `adaptive-codegraph`, `adaptive-codegraph-mcp`, and `adaptive-codegraph-daemon` from any project directory.
 
 ### Usage
 
