@@ -9,7 +9,6 @@ use crate::extract::ExtractorRegistry;
 use crate::index::IndexState;
 use crate::search::SearchIndex;
 use crate::store::Store;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Result of incremental reindex.
@@ -28,7 +27,8 @@ pub fn incremental_reindex(
     search: &SearchIndex,
     vectors: &mut VectorIndex,
 ) -> anyhow::Result<IncrementalResult> {
-    let index_dir = Path::new(&config.index_dir);
+    let base = config.base.as_deref().unwrap_or(Path::new("."));
+    let index_dir = base.join(&config.index_dir);
     let state_path = index_dir.join("state.json");
 
     let prev_state = IndexState::load(&state_path).unwrap_or_default();
@@ -139,24 +139,24 @@ fn detect_changes(
     config: &Config,
     prev_state: &IndexState,
 ) -> anyhow::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
-    let root = config.roots.first().ok_or_else(|| anyhow::anyhow!("no roots"))?;
+    let base = config.base.as_deref().unwrap_or(Path::new("."));
 
     // Try git-based detection first
     if let Some(prev_head) = &prev_state.git_head {
-        if let Ok((changed, deleted)) = git_diff_files(root.to_str().unwrap_or(""), prev_head) {
+        if let Ok((changed, deleted)) = git_diff_files(base.to_str().unwrap_or("."), prev_head) {
             return Ok((changed, deleted));
         }
     }
 
     // Fallback: mtime-based detection
-    mtime_diff_files(root.to_str().unwrap_or(""), prev_state.indexed_at.unwrap_or(0))
+    mtime_diff_files(
+        base.to_str().unwrap_or("."),
+        prev_state.indexed_at.unwrap_or(0),
+    )
 }
 
 /// Use `git diff --name-status` to find changed/deleted files.
-fn git_diff_files(
-    root: &str,
-    prev_head: &str,
-) -> anyhow::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+fn git_diff_files(root: &str, prev_head: &str) -> anyhow::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
     let output = std::process::Command::new("git")
         .args(["diff", "--name-status", prev_head, "HEAD"])
         .current_dir(root)
@@ -200,10 +200,7 @@ fn git_diff_files(
 }
 
 /// Fallback: find files modified after the given unix timestamp.
-fn mtime_diff_files(
-    root: &str,
-    since_epoch: u64,
-) -> anyhow::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+fn mtime_diff_files(root: &str, since_epoch: u64) -> anyhow::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
     let since = std::time::UNIX_EPOCH + std::time::Duration::from_secs(since_epoch);
     let mut changed = Vec::new();
 
@@ -229,10 +226,10 @@ fn mtime_diff_files(
 }
 
 fn detect_current_head(config: &Config) -> Option<String> {
-    let root = config.roots.first()?;
+    let base = config.base.as_deref().unwrap_or(Path::new("."));
     let output = std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
-        .current_dir(root)
+        .current_dir(base)
         .output()
         .ok()?;
     if output.status.success() {

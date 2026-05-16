@@ -3,6 +3,10 @@ name = "adaptive-codegraph-cli"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["fastembed"]
+fastembed = ["adaptive-codegraph-core/fastembed"]
+
 [dependencies]
 adaptive-codegraph-core = { path = "../core" }
 clap = { workspace = true }

@@ -1,12 +1,12 @@
 //! # MCP Server for adaptive-codegraph
 //!
 //! JSON-RPC 2.0 over stdio with MCP tool surface.
-//! Mirrors mie-codegraph's hand-rolled approach for compatibility.
 
 use adaptive_codegraph_core::{
     config::Config,
-    embed,
+    embed::{self, VectorIndex},
     extract::plugin::PluginRegistry,
+    incremental,
     index::{self, IndexState},
     lang,
     query,
@@ -14,11 +14,20 @@ use adaptive_codegraph_core::{
     store::Store,
 };
 use anyhow::Result;
+use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::io::{self, BufRead, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+#[derive(Parser)]
+#[command(name = "adaptive-codegraph-mcp", version, about = "MCP server for adaptive-codegraph")]
+struct Args {
+    /// Path to workspace root (default: current directory)
+    #[arg(long, default_value = ".")]
+    base: String,
+}
 
 #[derive(Deserialize)]
 struct Req {
@@ -51,10 +60,11 @@ struct Ctx {
     store: RefCell<Store>,
     index_dir: PathBuf,
     bm25: RefCell<Option<SearchIndex>>,
+    vectors: RefCell<Option<VectorIndex>>,
 }
 
 impl Ctx {
-    fn bm25(&self) -> Result<std::cell::Ref<'_, SearchIndex>, String> {
+    fn bm25(&self) -> std::result::Result<std::cell::Ref<'_, SearchIndex>, String> {
         if self.bm25.borrow().is_none() {
             let idx = SearchIndex::open(&self.index_dir)
                 .map_err(|e| format!("open bm25: {e}"))?;
@@ -65,12 +75,29 @@ impl Ctx {
         }))
     }
 
-    fn reload_after_reindex(&self) -> Result<(), String> {
+    fn vectors(&self) -> std::result::Result<std::cell::Ref<'_, VectorIndex>, String> {
+        if self.vectors.borrow().is_none() {
+            let path = self.index_dir.join("vectors.bin");
+            if path.exists() {
+                let v = VectorIndex::load(&path)
+                    .map_err(|e| format!("load vectors: {e}"))?;
+                *self.vectors.borrow_mut() = Some(v);
+            } else {
+                return Err("no vector index found; run index first".into());
+            }
+        }
+        Ok(std::cell::Ref::map(self.vectors.borrow(), |o| {
+            o.as_ref().unwrap()
+        }))
+    }
+
+    fn reload_after_reindex(&self) -> std::result::Result<(), String> {
         match Store::load(&self.index_dir.join("graph.bin")) {
             Ok(s) => *self.store.borrow_mut() = s,
             Err(e) => return Err(format!("reload store: {e}")),
         }
         *self.bm25.borrow_mut() = None;
+        *self.vectors.borrow_mut() = None;
         Ok(())
     }
 }
@@ -82,7 +109,8 @@ fn main() -> Result<()> {
         .with_target(false)
         .init();
 
-    let base = std::env::current_dir()?;
+    let args = Args::parse();
+    let base = PathBuf::from(&args.base).canonicalize()?;
     let config = Config::load(&base)?;
     let index_dir = base.join(&config.index_dir);
 
@@ -97,6 +125,7 @@ fn main() -> Result<()> {
         store: RefCell::new(store),
         index_dir,
         bm25: RefCell::new(None),
+        vectors: RefCell::new(None),
     };
 
     let stdin = io::stdin();
@@ -122,7 +151,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn dispatch(ctx: &Ctx, req: &Req) -> Result<Value, (i64, String)> {
+fn dispatch(ctx: &Ctx, req: &Req) -> std::result::Result<Value, (i64, String)> {
     if req.jsonrpc != "2.0" {
         return Err((-32600, "expected jsonrpc 2.0".into()));
     }
@@ -158,6 +187,12 @@ fn tools_list() -> Value {
                 "query":{"type":"string"},
                 "limit":{"type":"integer","default":20}
             },"required":["query"]})),
+        tool("semantic_search",
+            "Vector similarity search over symbols using embeddings. Finds semantically similar code even when names differ.",
+            json!({"type":"object","properties":{
+                "query":{"type":"string"},
+                "limit":{"type":"integer","default":10}
+            },"required":["query"]})),
         tool("find_symbol",
             "Substring search for a symbol by name. Returns matches with file/line.",
             json!({"type":"object","properties":{
@@ -185,8 +220,11 @@ fn tools_list() -> Value {
         tool("index",
             "Full rebuild of the codebase index.",
             json!({"type":"object","properties":{}})),
+        tool("incremental_index",
+            "Incremental reindex: only re-process files changed since last index (git-aware).",
+            json!({"type":"object","properties":{}})),
         tool("index_status",
-            "Report what's indexed: git HEAD, file count, symbol count.",
+            "Report what is indexed: git HEAD, file count, symbol count.",
             json!({"type":"object","properties":{}})),
     ])
 }
@@ -195,7 +233,7 @@ fn tool(name: &str, desc: &str, schema: Value) -> Value {
     json!({ "name": name, "description": desc, "inputSchema": schema })
 }
 
-fn call_tool(ctx: &Ctx, name: &str, args: &Value) -> Result<Value, (i64, String)> {
+fn call_tool(ctx: &Ctx, name: &str, args: &Value) -> std::result::Result<Value, (i64, String)> {
     match name {
         "index" => {
             let registry = lang::build_registry(&ctx.base)
@@ -210,6 +248,31 @@ fn call_tool(ctx: &Ctx, name: &str, args: &Value) -> Result<Value, (i64, String)
             return Ok(json!({
                 "symbols": syms,
                 "edges": edges,
+                "status": "ok"
+            }));
+        }
+        "incremental_index" => {
+            let registry = lang::build_registry(&ctx.base)
+                .map_err(|e| (-32603, format!("build_registry: {e}")))?;
+            let search = SearchIndex::open(&ctx.index_dir)
+                .map_err(|e| (-32603, format!("open search: {e}")))?;
+            let mut store = {
+                let s = ctx.store.borrow();
+                let data = s.serialize().map_err(|e| (-32603, format!("serialize store: {e}")))?;
+                Store::deserialize(&data).map_err(|e| (-32603, format!("clone store: {e}")))?
+            };
+            let dim = embed::create_embedder().dim();
+            let mut vectors = VectorIndex::load(&ctx.index_dir.join("vectors.bin"))
+                .unwrap_or_else(|_| VectorIndex::new(dim));
+            let result = incremental::incremental_reindex(
+                &ctx.config, &registry, &mut store, &search, &mut vectors,
+            ).map_err(|e| (-32603, format!("incremental_reindex: {e}")))?;
+            ctx.reload_after_reindex().map_err(|e| (-32603, e))?;
+            return Ok(json!({
+                "files_updated": result.files_updated,
+                "files_deleted": result.files_deleted,
+                "symbols_added": result.symbols_added,
+                "symbols_removed": result.symbols_removed,
                 "status": "ok"
             }));
         }
@@ -260,7 +323,7 @@ fn call_tool(ctx: &Ctx, name: &str, args: &Value) -> Result<Value, (i64, String)
         }
         "get_symbol" => {
             let id_hex = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let id = crate::parse_symbol_id(id_hex)?;
+            let id = parse_symbol_id(id_hex)?;
             match store.get(&id) {
                 Some(s) => Ok(json!({
                     "id": s.id.to_hex(),
@@ -342,18 +405,43 @@ fn call_tool(ctx: &Ctx, name: &str, args: &Value) -> Result<Value, (i64, String)
                 .collect();
             Ok(json!(results))
         }
+        "semantic_search" => {
+            let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            let embedder = embed::create_embedder();
+            let query_vec = embedder.embed_one(q)
+                .map_err(|e| (-32603, format!("embed query: {e}")))?;
+            let vectors = ctx.vectors().map_err(|e| (-32603, e))?;
+            let results_raw = vectors.search(&query_vec, limit);
+            let results: Vec<Value> = results_raw
+                .iter()
+                .filter_map(|(id, score)| {
+                    store.get(id).map(|s| {
+                        json!({
+                            "id": s.id.to_hex(),
+                            "name": s.name,
+                            "kind": s.kind,
+                            "lang": s.lang,
+                            "file": s.file,
+                            "score": score,
+                        })
+                    })
+                })
+                .collect();
+            Ok(json!(results))
+        }
         _ => Err((-32601, format!("unknown tool {name}"))),
     }
 }
 
-fn parse_id_arg(args: &Value) -> Result<adaptive_codegraph_core::model::SymbolId, (i64, String)> {
+fn parse_id_arg(args: &Value) -> std::result::Result<adaptive_codegraph_core::model::SymbolId, (i64, String)> {
     let id_hex = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
     parse_symbol_id(id_hex)
 }
 
 fn parse_symbol_id(
     hex: &str,
-) -> Result<adaptive_codegraph_core::model::SymbolId, (i64, String)> {
+) -> std::result::Result<adaptive_codegraph_core::model::SymbolId, (i64, String)> {
     adaptive_codegraph_core::model::SymbolId::from_hex(hex)
         .map_err(|e| (-32602, format!("invalid id '{hex}': {e}")))
 }

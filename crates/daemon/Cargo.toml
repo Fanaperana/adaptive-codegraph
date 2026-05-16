@@ -5,8 +5,10 @@ edition = "2021"
 
 [dependencies]
 adaptive-codegraph-core = { path = "../core" }
+clap = { workspace = true }
 tokio = { workspace = true }
 notify = { workspace = true }
+notify-debouncer-mini = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = { workspace = true }

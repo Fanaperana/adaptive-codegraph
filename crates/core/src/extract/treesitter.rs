@@ -27,8 +27,8 @@
 
 use crate::extract::Extractor;
 use crate::model::{ExtractionResult, Span, Symbol};
-use streaming_iterator::StreamingIterator;
 use std::path::Path;
+use streaming_iterator::StreamingIterator;
 
 /// Configuration for a tree-sitter based extractor.
 pub struct TreeSitterConfig {
@@ -53,12 +53,10 @@ pub struct TreeSitterExtractor {
 
 impl TreeSitterExtractor {
     pub fn new(config: TreeSitterConfig) -> anyhow::Result<Self> {
-        let symbol_query =
-            tree_sitter::Query::new(&config.ts_language, &config.symbol_query)
-                .map_err(|e| anyhow::anyhow!("symbol query error for {}: {e}", config.lang_id))?;
-        let edge_query =
-            tree_sitter::Query::new(&config.ts_language, &config.edge_query)
-                .map_err(|e| anyhow::anyhow!("edge query error for {}: {e}", config.lang_id))?;
+        let symbol_query = tree_sitter::Query::new(&config.ts_language, &config.symbol_query)
+            .map_err(|e| anyhow::anyhow!("symbol query error for {}: {e}", config.lang_id))?;
+        let edge_query = tree_sitter::Query::new(&config.ts_language, &config.edge_query)
+            .map_err(|e| anyhow::anyhow!("edge query error for {}: {e}", config.lang_id))?;
 
         Ok(Self {
             config,
@@ -68,32 +66,21 @@ impl TreeSitterExtractor {
     }
 
     /// Run the symbol query and extract Symbol structs.
-    fn extract_symbols(
-        &self,
-        path: &Path,
-        tree: &tree_sitter::Tree,
-        source: &[u8],
-    ) -> Vec<Symbol> {
+    fn extract_symbols(&self, path: &Path, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<Symbol> {
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut matches = cursor.matches(&self.symbol_query, tree.root_node(), source);
 
-        let name_idx = self
-            .symbol_query
-            .capture_index_for_name("symbol.name");
-        let def_idx = self
-            .symbol_query
-            .capture_index_for_name("symbol.def");
+        let name_idx = self.symbol_query.capture_index_for_name("symbol.name");
+        let def_idx = self.symbol_query.capture_index_for_name("symbol.def");
 
         let mut symbols = Vec::new();
         let path_str = path.to_string_lossy().to_string();
 
         while let Some(m) = matches.next() {
-            let name_node = name_idx.and_then(|idx| {
-                m.captures.iter().find(|c| c.index == idx).map(|c| c.node)
-            });
-            let def_node = def_idx.and_then(|idx| {
-                m.captures.iter().find(|c| c.index == idx).map(|c| c.node)
-            });
+            let name_node =
+                name_idx.and_then(|idx| m.captures.iter().find(|c| c.index == idx).map(|c| c.node));
+            let def_node =
+                def_idx.and_then(|idx| m.captures.iter().find(|c| c.index == idx).map(|c| c.node));
 
             if let Some(name_node) = name_node {
                 let name = name_node.utf8_text(source).unwrap_or("").to_string();
@@ -103,7 +90,9 @@ impl TreeSitterExtractor {
 
                 let span_node = def_node.unwrap_or(name_node);
                 let kind = infer_kind(span_node.kind());
-                let fqname = format!("{}::{}", path_str, name);
+
+                // Build scoped fqname by walking parent nodes
+                let fqname = build_fqname(&path_str, &name, name_node, source);
 
                 let span = Span {
                     start_byte: span_node.start_byte(),
@@ -112,15 +101,16 @@ impl TreeSitterExtractor {
                     end_line: span_node.end_position().row as u32,
                 };
 
-                // Try to extract the signature (first line of the definition)
-                let signature = def_node.map(|n| {
-                    let text = n.utf8_text(source).unwrap_or("");
-                    text.lines().next().unwrap_or("").to_string()
-                });
+                // Extract multi-line signature (up to closing paren/brace)
+                let signature = def_node.map(|n| extract_signature(n, source));
+
+                // Extract doc comment from preceding sibling nodes
+                let doc = def_node.and_then(|n| extract_doc_comment(n, source));
 
                 let mut sym =
                     Symbol::new(&self.config.lang_id, &kind, &name, &fqname, &path_str, span);
                 sym.signature = signature;
+                sym.doc = doc;
                 symbols.push(sym);
             }
         }
@@ -232,5 +222,126 @@ fn infer_kind(node_kind: &str) -> String {
         "trait_item" => "trait".to_string(),
         "module" | "mod_item" => "module".to_string(),
         _ => "definition".to_string(),
+    }
+}
+
+/// Walk parent nodes to build a fully qualified name like `file::Class::method`.
+fn build_fqname(path: &str, name: &str, node: tree_sitter::Node, source: &[u8]) -> String {
+    let scope_kinds = [
+        "class_definition",
+        "class_declaration",
+        "struct_item",
+        "struct_specifier",
+        "impl_item",
+        "trait_item",
+        "module",
+        "mod_item",
+        "function_definition",
+        "function_declaration",
+        "function_item",
+    ];
+
+    let mut scope_chain = Vec::new();
+    let mut current = node.parent();
+
+    while let Some(parent) = current {
+        if scope_kinds.contains(&parent.kind()) {
+            // Look for a `name:` child to get the scope name
+            if let Some(name_child) = parent.child_by_field_name("name") {
+                if let Ok(scope_name) = name_child.utf8_text(source) {
+                    if !scope_name.is_empty() {
+                        scope_chain.push(scope_name.to_string());
+                    }
+                }
+            }
+        }
+        current = parent.parent();
+    }
+
+    scope_chain.reverse();
+    if scope_chain.is_empty() {
+        format!("{}::{}", path, name)
+    } else {
+        format!("{}::{}::{}", path, scope_chain.join("::"), name)
+    }
+}
+
+/// Extract a multi-line signature (up to the first `{`, `=>`, or `:` at depth 0).
+fn extract_signature(node: tree_sitter::Node, source: &[u8]) -> String {
+    let text = node.utf8_text(source).unwrap_or("");
+    // Find the opening brace/colon that starts the body
+    let mut depth = 0i32;
+    let mut end_idx = text.len();
+
+    for (i, ch) in text.char_indices() {
+        match ch {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth -= 1,
+            '{' if depth == 0 => {
+                end_idx = i;
+                break;
+            }
+            ':' if depth == 0 && i > 0 => {
+                // Python-style: `def foo(x):` — include the colon
+                // But not for Rust's `pub fn foo() -> Type {`
+                let after = text.get(i + 1..).unwrap_or("");
+                if after.starts_with('\n') || after.starts_with(' ') || after.is_empty() {
+                    // Likely Python-style class/function body start
+                    end_idx = i + 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let sig = text[..end_idx].trim();
+    // Collapse internal whitespace runs
+    sig.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Extract doc comments from preceding sibling nodes (e.g., /// or /** */).
+fn extract_doc_comment(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut lines = Vec::new();
+    let mut sibling = node.prev_sibling();
+
+    while let Some(sib) = sibling {
+        let kind = sib.kind();
+        if kind == "comment" || kind == "line_comment" || kind == "block_comment" {
+            if let Ok(text) = sib.utf8_text(source) {
+                lines.push(text.to_string());
+            }
+            sibling = sib.prev_sibling();
+        } else {
+            break;
+        }
+    }
+
+    if lines.is_empty() {
+        return None;
+    }
+
+    lines.reverse();
+    let cleaned: Vec<String> = lines
+        .iter()
+        .map(|l| {
+            l.trim()
+                .trim_start_matches("///")
+                .trim_start_matches("//!")
+                .trim_start_matches("//")
+                .trim_start_matches("/**")
+                .trim_end_matches("*/")
+                .trim_start_matches('*')
+                .trim_start_matches('#')
+                .trim()
+                .to_string()
+        })
+        .collect();
+
+    let doc = cleaned.join("\n").trim().to_string();
+    if doc.is_empty() {
+        None
+    } else {
+        Some(doc)
     }
 }

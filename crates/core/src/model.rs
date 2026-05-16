@@ -151,7 +151,7 @@ impl Symbol {
 ///
 /// `kind` is a free-form string: "calls", "imports", "inherits",
 /// "implements", "renders", "reads_table", "defines", etc.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Edge {
     pub from: SymbolId,
     pub to: SymbolId,

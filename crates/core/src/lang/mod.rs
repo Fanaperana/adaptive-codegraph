@@ -38,7 +38,10 @@ pub fn build_registry(base: &Path) -> anyhow::Result<ExtractorRegistry> {
     // Try to find languages/ next to the binary first
     let lang_dir = find_languages_dir(base);
     let Some(lang_dir) = lang_dir else {
-        tracing::warn!("No languages/ directory found (checked binary dir and {base})", base = base.display());
+        tracing::warn!(
+            "No languages/ directory found (checked binary dir and {base})",
+            base = base.display()
+        );
         return Ok(registry);
     };
     tracing::info!("Using languages/ from {}", lang_dir.display());
@@ -67,10 +70,21 @@ pub fn build_registry(base: &Path) -> anyhow::Result<ExtractorRegistry> {
 }
 
 /// Find the `languages/` directory by checking (in order):
-/// 1. Next to the current executable
-/// 2. In the project base directory
+/// 1. ADAPTIVE_CODEGRAPH_LANGUAGES env var
+/// 2. Next to the current executable
+/// 3. Workspace root up from the executable (for dev builds)
+/// 4. In the project base directory
 fn find_languages_dir(base: &Path) -> Option<PathBuf> {
-    // Check next to the binary
+    // 1. Check environment variable
+    if let Ok(env_path) = std::env::var("ADAPTIVE_CODEGRAPH_LANGUAGES") {
+        let p = PathBuf::from(&env_path);
+        if p.is_dir() {
+            return Some(p);
+        }
+        tracing::warn!("ADAPTIVE_CODEGRAPH_LANGUAGES={env_path} is not a directory");
+    }
+
+    // 2. Check next to the binary
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
             let candidate = exe_dir.join(LANGUAGES_DIR);
@@ -89,7 +103,19 @@ fn find_languages_dir(base: &Path) -> Option<PathBuf> {
         }
     }
 
-    // Fall back to the project directory
+    // 3. Check XDG data home (~/.local/share/adaptive-codegraph/languages/)
+    if let Ok(home) = std::env::var("HOME") {
+        let xdg_data =
+            std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| format!("{home}/.local/share"));
+        let candidate = PathBuf::from(xdg_data)
+            .join("adaptive-codegraph")
+            .join(LANGUAGES_DIR);
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+    }
+
+    // 4. Fall back to the project directory
     let candidate = base.join(LANGUAGES_DIR);
     if candidate.is_dir() {
         return Some(candidate);
@@ -99,7 +125,10 @@ fn find_languages_dir(base: &Path) -> Option<PathBuf> {
 }
 
 /// Load a single language definition and create its extractor.
-fn load_language(toml_path: &Path, base: &Path) -> anyhow::Result<(TreeSitterExtractor, Vec<String>)> {
+fn load_language(
+    toml_path: &Path,
+    base: &Path,
+) -> anyhow::Result<(TreeSitterExtractor, Vec<String>)> {
     let text = std::fs::read_to_string(toml_path)?;
     let def: LanguageDef = toml::from_str(&text)?;
 

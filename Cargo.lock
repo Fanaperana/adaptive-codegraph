@@ -54,7 +54,9 @@ version = "0.1.0"
 dependencies = [
  "adaptive-codegraph-core",
  "anyhow",
+ "clap",
  "notify",
+ "notify-debouncer-mini",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -66,6 +68,7 @@ version = "0.1.0"
 dependencies = [
  "adaptive-codegraph-core",
  "anyhow",
+ "clap",
  "serde",
  "serde_json",
  "tokio",
@@ -2714,6 +2717,18 @@ dependencies = [
  "notify-types",
  "walkdir",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "notify-debouncer-mini"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaa5a66d07ed97dce782be94dcf5ab4d1b457f4243f7566c7557f15cabc8c799"
+dependencies = [
+ "log",
+ "notify",
+ "notify-types",
+ "tempfile",
 ]
 
 [[package]]

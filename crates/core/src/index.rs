@@ -4,15 +4,16 @@
 //! and populates search + vector indexes.
 
 use crate::config::Config;
-use crate::embed::{self, Embedder, VectorIndex};
-use crate::extract::ExtractorRegistry;
+use crate::embed::{self, VectorIndex};
 use crate::extract::plugin::PluginRegistry;
-use crate::model::ExtractionResult;
+use crate::extract::ExtractorRegistry;
+use crate::model::{ExtractionResult, SymbolId};
 use crate::search::SearchIndex;
 use crate::store::Store;
 use rayon::prelude::*;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Index state saved between runs for incremental reindexing.
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -45,44 +46,94 @@ pub fn full_index(
     let files = collect_files(config, registry, base)?;
     tracing::info!("Collected {} files to index", files.len());
 
+    let failed_count = AtomicUsize::new(0);
+
     // Extract in parallel
-    let results: Vec<(PathBuf, ExtractionResult)> = files
+    let results: Vec<(PathBuf, ExtractionResult, Vec<u8>)> = files
         .par_iter()
         .filter_map(|path| {
             let ext = path.extension()?.to_str()?;
             let extractor = registry.for_extension(ext)?;
             let content = std::fs::read(path).ok()?;
             match extractor.extract(path, &content) {
-                Ok(result) => Some((path.clone(), result)),
+                Ok(result) => Some((path.clone(), result, content)),
                 Err(e) => {
                     tracing::warn!("Extract failed for {}: {e}", path.display());
+                    failed_count.fetch_add(1, Ordering::Relaxed);
                     None
                 }
             }
         })
         .collect();
 
+    let failed = failed_count.load(Ordering::Relaxed);
+    if failed > 0 {
+        tracing::warn!("{failed} file(s) failed extraction (see warnings above)");
+    }
+
     // Build store
     let mut store = Store::new();
     let mut all_results = ExtractionResult::new();
 
-    for (_path, result) in &results {
+    for (_path, result, _content) in &results {
         all_results.merge(result.clone());
     }
 
-    // Insert symbols
+    // Insert symbols first (needed for plugin symbol_index)
     for sym in &all_results.symbols {
         store.insert_symbol(sym.clone());
+    }
+
+    // Apply plugin patterns to each file's results
+    if !plugins.pattern_names().is_empty() {
+        let symbol_index: HashMap<String, SymbolId> = all_results
+            .symbols
+            .iter()
+            .map(|s| (s.name.clone(), s.id))
+            .collect();
+
+        for (path, result, content) in &results {
+            let path_str = path.to_string_lossy();
+            if let Ok(content_str) = std::str::from_utf8(content) {
+                let mut plugin_result = result.clone();
+                plugins.apply_all(&path_str, content_str, &mut plugin_result, &symbol_index);
+                // Collect any new edges from plugins
+                for edge in &plugin_result.edges {
+                    if !all_results.edges.contains(edge) {
+                        all_results.edges.push(edge.clone());
+                    }
+                }
+                for ue in &plugin_result.unresolved_edges {
+                    all_results.unresolved_edges.push(ue.clone());
+                }
+            }
+        }
     }
 
     // Resolve and insert edges: map unresolved callee names to actual symbols
     let mut resolved_count = 0usize;
     for ue in &all_results.unresolved_edges {
+        // Try exact match first, then substring
         let candidates = store.find_by_name_exact(&ue.to_name);
-        if let Some(target) = candidates.first() {
+        let target = if candidates.len() == 1 {
+            Some(candidates[0])
+        } else if candidates.len() > 1 {
+            // Prefer same-file match for ambiguous names
+            let from_sym = store.get(&ue.from);
+            let from_file = from_sym.map(|s| s.file.as_str());
+            candidates
+                .iter()
+                .find(|s| from_file == Some(s.file.as_str()))
+                .or(candidates.first())
+                .copied()
+        } else {
+            None
+        };
+
+        if let Some(target) = target {
             let resolved = crate::model::Edge {
-                from: ue.from.clone(),
-                to: target.id.clone(),
+                from: ue.from,
+                to: target.id,
                 kind: ue.kind.clone(),
             };
             if store.insert_edge(resolved) {
@@ -168,7 +219,11 @@ pub fn full_index(
 }
 
 /// Collect all indexable files from configured roots.
-fn collect_files(config: &Config, registry: &ExtractorRegistry, base: &Path) -> anyhow::Result<Vec<PathBuf>> {
+fn collect_files(
+    config: &Config,
+    registry: &ExtractorRegistry,
+    base: &Path,
+) -> anyhow::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
     for root in &config.roots {

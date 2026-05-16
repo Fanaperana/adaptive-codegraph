@@ -7,8 +7,13 @@ edition = "2021"
 name = "adaptive-codegraph-mcp"
 path = "src/main.rs"
 
+[features]
+default = ["fastembed"]
+fastembed = ["adaptive-codegraph-core/fastembed"]
+
 [dependencies]
 adaptive-codegraph-core = { path = "../core" }
+clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -5,7 +5,9 @@ use std::time::Instant;
 
 use adaptive_codegraph_core::{
     config::Config,
+    embed::{self, VectorIndex},
     extract::plugin::PluginRegistry,
+    incremental,
     index::{self, IndexState},
     lang,
     query,
@@ -27,11 +29,21 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Build or rebuild the full index
-    Index,
+    Index {
+        /// Only re-index files changed since last index (git-aware)
+        #[arg(long)]
+        incremental: bool,
+    },
     /// Search symbols by name/text (BM25)
     Search {
         query: String,
         #[arg(long, default_value = "20")]
+        limit: usize,
+    },
+    /// Semantic similarity search (vector embeddings)
+    SemanticSearch {
+        query: String,
+        #[arg(long, default_value = "10")]
         limit: usize,
     },
     /// Find a symbol by name
@@ -70,8 +82,15 @@ fn main() -> Result<()> {
     let base = PathBuf::from(&cli.base).canonicalize()?;
 
     match cli.command {
-        Commands::Index => cmd_index(&base)?,
+        Commands::Index { incremental } => {
+            if incremental {
+                cmd_incremental_index(&base)?;
+            } else {
+                cmd_index(&base)?;
+            }
+        }
         Commands::Search { query, limit } => cmd_search(&base, &query, limit)?,
+        Commands::SemanticSearch { query, limit } => cmd_semantic_search(&base, &query, limit)?,
         Commands::Find { name, limit } => cmd_find(&base, &name, limit)?,
         Commands::Callers { name } => cmd_callers(&base, &name)?,
         Commands::Callees { name } => cmd_callees(&base, &name)?,
@@ -100,9 +119,48 @@ fn cmd_index(base: &PathBuf) -> Result<()> {
     Ok(())
 }
 
+fn cmd_incremental_index(base: &PathBuf) -> Result<()> {
+    let t0 = Instant::now();
+    let config = Config::load(base)?;
+    let index_dir = base.join(&config.index_dir);
+
+    // Check if a full index exists
+    if !index_dir.join("graph.bin").exists() {
+        eprintln!("No existing index found. Running full index instead.");
+        return cmd_index(base);
+    }
+
+    let registry = lang::build_registry(base)?;
+    let mut store = Store::load(&index_dir.join("graph.bin"))?;
+    let search = SearchIndex::open(&index_dir)?;
+    let dim = embed::create_embedder().dim();
+    let mut vectors = VectorIndex::load(&index_dir.join("vectors.bin"))
+        .unwrap_or_else(|_| VectorIndex::new(dim));
+
+    let result = incremental::incremental_reindex(
+        &config, &registry, &mut store, &search, &mut vectors,
+    )?;
+
+    eprintln!(
+        "Incremental: {} updated, {} deleted, +{} symbols, -{} symbols in {:.2}s",
+        result.files_updated,
+        result.files_deleted,
+        result.symbols_added,
+        result.symbols_removed,
+        t0.elapsed().as_secs_f64()
+    );
+    Ok(())
+}
+
 fn load_index(base: &PathBuf) -> Result<(Config, Store, SearchIndex)> {
     let config = Config::load(base)?;
     let index_dir = base.join(&config.index_dir);
+    if !index_dir.join("graph.bin").exists() {
+        anyhow::bail!(
+            "No index found at {}. Run `adaptive-codegraph index` first.",
+            index_dir.display()
+        );
+    }
     let store = Store::load(&index_dir.join("graph.bin"))?;
     let search = SearchIndex::open(&index_dir)?;
     Ok((config, store, search))
@@ -120,6 +178,28 @@ fn cmd_search(base: &PathBuf, q: &str, limit: usize) -> Result<()> {
             "{} ({}, {}) — {} [score: {:.3}]",
             hit.name, hit.kind, hit.lang, hit.file, hit.score
         );
+    }
+    Ok(())
+}
+
+fn cmd_semantic_search(base: &PathBuf, q: &str, limit: usize) -> Result<()> {
+    let (config, store, _search) = load_index(base)?;
+    let index_dir = base.join(&config.index_dir);
+    let vectors = VectorIndex::load(&index_dir.join("vectors.bin"))?;
+    let embedder = embed::create_embedder();
+    let query_vec = embedder.embed_one(q)?;
+    let results = vectors.search(&query_vec, limit);
+    if results.is_empty() {
+        println!("No results.");
+        return Ok(());
+    }
+    for (id, score) in &results {
+        if let Some(sym) = store.get(id) {
+            println!(
+                "{} ({}, {}) — {} [similarity: {:.3}]",
+                sym.name, sym.kind, sym.lang, sym.file, score
+            );
+        }
     }
     Ok(())
 }
