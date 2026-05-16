@@ -4,6 +4,8 @@
 //! Supports built-in grammars (compiled into the binary) and external
 //! grammars (loaded from shared libraries at runtime).
 
+pub mod embedded;
+
 use crate::extract::treesitter::{TreeSitterConfig, TreeSitterExtractor};
 use crate::extract::{Extractor, ExtractorRegistry};
 use std::path::{Path, PathBuf};
@@ -71,9 +73,10 @@ pub fn build_registry(base: &Path) -> anyhow::Result<ExtractorRegistry> {
 
 /// Find the `languages/` directory by checking (in order):
 /// 1. ADAPTIVE_CODEGRAPH_LANGUAGES env var
-/// 2. Next to the current executable
-/// 3. Workspace root up from the executable (for dev builds)
-/// 4. In the project base directory
+/// 2. Inside .adaptive-codegraph/languages/ in the project (created by `init`)
+/// 3. Next to the current executable
+/// 4. Workspace root up from the executable (for dev builds)
+/// 5. In the project base directory (bare `languages/`)
 fn find_languages_dir(base: &Path) -> Option<PathBuf> {
     // 1. Check environment variable
     if let Ok(env_path) = std::env::var("ADAPTIVE_CODEGRAPH_LANGUAGES") {
@@ -84,7 +87,13 @@ fn find_languages_dir(base: &Path) -> Option<PathBuf> {
         tracing::warn!("ADAPTIVE_CODEGRAPH_LANGUAGES={env_path} is not a directory");
     }
 
-    // 2. Check next to the binary
+    // 2. Check inside .adaptive-codegraph/languages/ (project-local, created by init)
+    let candidate = base.join(".adaptive-codegraph").join(LANGUAGES_DIR);
+    if candidate.is_dir() {
+        return Some(candidate);
+    }
+
+    // 3. Check next to the binary
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
             let candidate = exe_dir.join(LANGUAGES_DIR);
@@ -103,7 +112,7 @@ fn find_languages_dir(base: &Path) -> Option<PathBuf> {
         }
     }
 
-    // 3. Check XDG data home (~/.local/share/adaptive-codegraph/languages/)
+    // 4. Check XDG data home (~/.local/share/adaptive-codegraph/languages/)
     if let Ok(home) = std::env::var("HOME") {
         let xdg_data =
             std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| format!("{home}/.local/share"));
@@ -115,7 +124,7 @@ fn find_languages_dir(base: &Path) -> Option<PathBuf> {
         }
     }
 
-    // 4. Fall back to the project directory
+    // 5. Fall back to the project directory
     let candidate = base.join(LANGUAGES_DIR);
     if candidate.is_dir() {
         return Some(candidate);

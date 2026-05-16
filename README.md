@@ -136,26 +136,28 @@ cd adaptive-codegraph
 ./install.sh
 ```
 
-That's it. This builds and installs everything (CLI, MCP server, daemon, and language definitions) to `~/.cargo/bin/`.
-
-### Usage
+### Use in Any Project
 
 ```bash
-# Go to any project
 cd /path/to/your/project
 
-# Index the project
+# One-time setup: creates .adaptive-codegraph/ with languages, MCP config, and .gitignore entry
+adaptive-codegraph init
+
+# Build the index
 adaptive-codegraph index
 
 # Search
 adaptive-codegraph search "handle_request"
 ```
 
-> **Tip:** Add `.adaptive-codegraph/` to your global gitignore:
-> ```bash
-> echo ".adaptive-codegraph/" >> ~/.gitignore
-> git config --global core.excludesFile ~/.gitignore
-> ```
+Everything lives inside `.adaptive-codegraph/` — just add it to `.gitignore` (done automatically by `init`).
+
+### Add a Custom Language
+
+```bash
+adaptive-codegraph add-language my_lang.toml --symbol-query my_lang.scm --edge-query my_lang_edges.scm
+```
 
 
 ## 🏗️ Architecture
