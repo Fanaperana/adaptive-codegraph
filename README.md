@@ -19,7 +19,7 @@
 
 ## 💡 Why?
 
-A rewrite of [mie-codegraph](https://github.com/mieweb/mie-codegraph) that replaces **hardcoded per-language extractors** with **tree-sitter query files**. The result:
+A similar implementation to [mie-codegraph](https://github.com/mieweb/mie-codegraph) that replaces **hardcoded per-language extractors** with **tree-sitter query files**. The result:
 
 | | mie-codegraph | adaptive-codegraph |
 |---|---|---|
