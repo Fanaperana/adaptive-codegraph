@@ -360,3 +360,93 @@ fn extract_doc_comment(node: tree_sitter::Node, source: &[u8]) -> Option<String>
         Some(doc)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn infer_kind_functions() {
+        assert_eq!(infer_kind("function_definition"), "function");
+        assert_eq!(infer_kind("function_declaration"), "function");
+        assert_eq!(infer_kind("function_item"), "function");
+        assert_eq!(infer_kind("method_definition"), "function");
+        assert_eq!(infer_kind("method_declaration"), "function");
+        assert_eq!(infer_kind("generator_function_declaration"), "function");
+        assert_eq!(infer_kind("abstract_method_signature"), "function");
+    }
+
+    #[test]
+    fn infer_kind_classes_structs() {
+        assert_eq!(infer_kind("class_definition"), "class");
+        assert_eq!(infer_kind("class_declaration"), "class");
+        assert_eq!(infer_kind("struct_item"), "struct");
+        assert_eq!(infer_kind("struct_specifier"), "struct");
+    }
+
+    #[test]
+    fn infer_kind_enums() {
+        assert_eq!(infer_kind("enum_item"), "enum");
+        assert_eq!(infer_kind("enum_specifier"), "enum");
+        assert_eq!(infer_kind("enum_declaration"), "enum");
+        assert_eq!(infer_kind("enum_variant"), "enum_variant");
+        assert_eq!(infer_kind("enumerator"), "enum_variant");
+        assert_eq!(infer_kind("enum_assignment"), "enum_variant");
+    }
+
+    #[test]
+    fn infer_kind_types() {
+        assert_eq!(infer_kind("type_alias_declaration"), "type_alias");
+        assert_eq!(infer_kind("type_item"), "type_alias");
+        assert_eq!(infer_kind("type_definition"), "type_alias");
+        assert_eq!(infer_kind("interface_declaration"), "interface");
+    }
+
+    #[test]
+    fn infer_kind_rust_specific() {
+        assert_eq!(infer_kind("impl_item"), "impl");
+        assert_eq!(infer_kind("trait_item"), "trait");
+        assert_eq!(infer_kind("mod_item"), "module");
+        assert_eq!(infer_kind("macro_definition"), "macro");
+        assert_eq!(infer_kind("const_item"), "constant");
+        assert_eq!(infer_kind("static_item"), "static");
+    }
+
+    #[test]
+    fn infer_kind_c_specific() {
+        assert_eq!(infer_kind("preproc_def"), "macro");
+        assert_eq!(infer_kind("preproc_function_def"), "macro");
+        assert_eq!(infer_kind("union_specifier"), "union");
+    }
+
+    #[test]
+    fn infer_kind_fields_and_variables() {
+        assert_eq!(infer_kind("field_declaration"), "field");
+        assert_eq!(infer_kind("public_field_definition"), "field");
+        assert_eq!(infer_kind("field_definition"), "field");
+        assert_eq!(infer_kind("lexical_declaration"), "variable");
+        assert_eq!(infer_kind("variable_declarator"), "variable");
+        assert_eq!(infer_kind("var_declaration"), "variable");
+        assert_eq!(infer_kind("var_spec"), "variable");
+    }
+
+    #[test]
+    fn infer_kind_unknown_defaults_to_definition() {
+        assert_eq!(infer_kind("some_unknown_node"), "definition");
+    }
+
+    #[test]
+    fn extract_signature_simple() {
+        let src = b"fn main() {\n    println!(\"hello\");\n}";
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let root = tree.root_node();
+        let func = root.child(0).unwrap();
+        let sig = extract_signature(func, src);
+        assert!(sig.contains("fn main()"));
+        assert!(!sig.contains("println"));
+    }
+}

@@ -4,3 +4,13 @@
 *.bin
 .fastembed_cache/
 .cache/
+
+# Editor files
+.vscode/settings.json
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

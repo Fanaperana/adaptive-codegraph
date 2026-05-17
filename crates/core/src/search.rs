@@ -16,6 +16,7 @@ struct SearchFields {
     name: Field,
     fqname: Field,
     file: Field,
+    file_text: Field,
     signature: Field,
     kind: Field,
     lang: Field,
@@ -36,10 +37,7 @@ impl SearchIndex {
         let dir = index_dir.join("tantivy");
         std::fs::create_dir_all(&dir)?;
 
-        let index = Index::open_or_create(
-            tantivy::directory::MmapDirectory::open(&dir)?,
-            schema,
-        )?;
+        let index = Index::open_or_create(tantivy::directory::MmapDirectory::open(&dir)?, schema)?;
 
         Ok(Self { index, fields })
     }
@@ -57,7 +55,8 @@ impl SearchIndex {
         builder.add_text_field("id", STRING | STORED);
         builder.add_text_field("name", TEXT | STORED);
         builder.add_text_field("fqname", TEXT | STORED);
-        builder.add_text_field("file", TEXT | STORED);
+        builder.add_text_field("file", STRING | STORED);
+        builder.add_text_field("file_text", TEXT);
         builder.add_text_field("signature", TEXT);
         builder.add_text_field("kind", STRING | STORED);
         builder.add_text_field("lang", STRING | STORED);
@@ -70,6 +69,7 @@ impl SearchIndex {
             name: schema.get_field("name").unwrap(),
             fqname: schema.get_field("fqname").unwrap(),
             file: schema.get_field("file").unwrap(),
+            file_text: schema.get_field("file_text").unwrap(),
             signature: schema.get_field("signature").unwrap(),
             kind: schema.get_field("kind").unwrap(),
             lang: schema.get_field("lang").unwrap(),
@@ -98,6 +98,7 @@ impl SearchIndex {
             self.fields.name => name,
             self.fields.fqname => fqname,
             self.fields.file => file,
+            self.fields.file_text => file,
             self.fields.signature => signature.unwrap_or(""),
             self.fields.kind => kind,
             self.fields.lang => lang,
@@ -124,7 +125,7 @@ impl SearchIndex {
             vec![
                 self.fields.name,
                 self.fields.fqname,
-                self.fields.file,
+                self.fields.file_text,
                 self.fields.signature,
             ],
         );
@@ -185,4 +186,131 @@ pub struct SearchHit {
     pub kind: String,
     pub lang: String,
     pub score: f32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HEAP: usize = 15_000_000;
+
+    fn index_test_symbol(
+        search: &SearchIndex,
+        writer: &IndexWriter,
+        name: &str,
+        kind: &str,
+        lang: &str,
+        file: &str,
+    ) {
+        let id = SymbolId::new(lang, kind, &format!("{}::{}", file, name), file);
+        search.index_symbol(
+            writer,
+            &id,
+            name,
+            &format!("{}::{}", file, name),
+            file,
+            None,
+            kind,
+            lang,
+        );
+    }
+
+    #[test]
+    fn in_memory_index_and_search() {
+        let search = SearchIndex::in_memory().unwrap();
+        let mut writer = search.writer(HEAP).unwrap();
+        index_test_symbol(
+            &search,
+            &writer,
+            "process_data",
+            "function",
+            "python",
+            "main.py",
+        );
+        index_test_symbol(&search, &writer, "Config", "struct", "rust", "config.rs");
+        writer.commit().unwrap();
+
+        let hits = search.search("process_data", 10).unwrap();
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].name, "process_data");
+        assert_eq!(hits[0].kind, "function");
+        assert_eq!(hits[0].lang, "python");
+    }
+
+    #[test]
+    fn search_returns_empty_for_no_match() {
+        let search = SearchIndex::in_memory().unwrap();
+        let mut writer = search.writer(HEAP).unwrap();
+        index_test_symbol(&search, &writer, "hello", "function", "rust", "lib.rs");
+        writer.commit().unwrap();
+
+        let hits = search.search("nonexistent_xyz", 10).unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn search_respects_limit() {
+        let search = SearchIndex::in_memory().unwrap();
+        let mut writer = search.writer(HEAP).unwrap();
+        for i in 0..10 {
+            index_test_symbol(
+                &search,
+                &writer,
+                &format!("func_{i}"),
+                "function",
+                "rust",
+                "lib.rs",
+            );
+        }
+        writer.commit().unwrap();
+
+        let hits = search.search("func", 3).unwrap();
+        assert!(hits.len() <= 3);
+    }
+
+    #[test]
+    fn remove_file_and_reindex() {
+        let search = SearchIndex::in_memory().unwrap();
+        let mut writer = search.writer(HEAP).unwrap();
+        index_test_symbol(
+            &search,
+            &writer,
+            "alpha",
+            "function",
+            "rust",
+            "src/alpha.rs",
+        );
+        index_test_symbol(&search, &writer, "beta", "function", "rust", "src/beta.rs");
+        writer.commit().unwrap();
+
+        // Both should be searchable
+        assert!(!search.search("alpha", 10).unwrap().is_empty());
+        assert!(!search.search("beta", 10).unwrap().is_empty());
+
+        // Delete src/alpha.rs (file is STRING, so delete_term matches exactly)
+        search.remove_file(&writer, "src/alpha.rs");
+        writer.commit().unwrap();
+        drop(writer);
+
+        // After deletion, alpha should be gone
+        let hits = search.search("alpha", 10).unwrap();
+        assert!(
+            hits.is_empty(),
+            "alpha should be deleted, got {} hits",
+            hits.len()
+        );
+        // beta should still exist
+        assert!(!search.search("beta", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_hit_has_correct_file() {
+        let search = SearchIndex::in_memory().unwrap();
+        let mut writer = search.writer(HEAP).unwrap();
+        index_test_symbol(&search, &writer, "main", "function", "go", "cmd/main.go");
+        writer.commit().unwrap();
+
+        let hits = search.search("main", 10).unwrap();
+        assert_eq!(hits[0].file, "cmd/main.go");
+    }
 }

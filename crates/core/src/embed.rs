@@ -169,3 +169,97 @@ pub fn create_embedder() -> Box<dyn Embedder> {
     }
     Box::new(HashEmbedder)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::SymbolId;
+
+    #[test]
+    fn hash_embedder_dimension() {
+        let e = HashEmbedder;
+        assert_eq!(e.dim(), 32);
+    }
+
+    #[test]
+    fn hash_embedder_deterministic() {
+        let e = HashEmbedder;
+        let a = e.embed_one("hello").unwrap();
+        let b = e.embed_one("hello").unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn hash_embedder_different_inputs() {
+        let e = HashEmbedder;
+        let a = e.embed_one("hello").unwrap();
+        let b = e.embed_one("world").unwrap();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn hash_embedder_batch() {
+        let e = HashEmbedder;
+        let batch = e.embed_batch(&["a", "b", "c"]).unwrap();
+        assert_eq!(batch.len(), 3);
+        assert_eq!(batch[0].len(), 32);
+    }
+
+    #[test]
+    fn vector_index_insert_and_search() {
+        let e = HashEmbedder;
+        let mut vi = VectorIndex::new(e.dim());
+        let id_a = SymbolId::new("rust", "fn", "a", "a.rs");
+        let id_b = SymbolId::new("rust", "fn", "b", "b.rs");
+        vi.insert(id_a, e.embed_one("hello world").unwrap());
+        vi.insert(id_b, e.embed_one("goodbye moon").unwrap());
+        assert_eq!(vi.len(), 2);
+        assert!(!vi.is_empty());
+
+        let query = e.embed_one("hello world").unwrap();
+        let results = vi.search(&query, 5);
+        assert_eq!(results.len(), 2);
+        // First result should be the closest (exact match)
+        assert_eq!(results[0].0, id_a);
+        assert!((results[0].1 - 1.0).abs() < 1e-5); // cosine similarity ~1.0
+    }
+
+    #[test]
+    fn vector_index_save_load_roundtrip() {
+        let e = HashEmbedder;
+        let mut vi = VectorIndex::new(e.dim());
+        let id = SymbolId::new("go", "fn", "main", "main.go");
+        vi.insert(id, e.embed_one("main function").unwrap());
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vectors.bin");
+        vi.save(&path).unwrap();
+
+        let loaded = VectorIndex::load(&path).unwrap();
+        assert_eq!(loaded.len(), 1);
+
+        let query = e.embed_one("main function").unwrap();
+        let results = loaded.search(&query, 1);
+        assert_eq!(results[0].0, id);
+    }
+
+    #[test]
+    fn cosine_similarity_identical() {
+        let a = vec![1.0, 2.0, 3.0];
+        assert!((cosine_similarity(&a, &a) - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn cosine_similarity_orthogonal() {
+        let a = vec![1.0, 0.0];
+        let b = vec![0.0, 1.0];
+        assert!(cosine_similarity(&a, &b).abs() < 1e-5);
+    }
+
+    #[test]
+    fn cosine_similarity_zero_vector() {
+        let a = vec![1.0, 2.0];
+        let z = vec![0.0, 0.0];
+        assert_eq!(cosine_similarity(&a, &z), 0.0);
+    }
+}

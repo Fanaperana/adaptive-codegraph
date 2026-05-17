@@ -112,10 +112,7 @@ impl Store {
         self.graph
             .neighbors_directed(nx, Direction::Incoming)
             .filter_map(|caller_nx| {
-                let edge_ref = self
-                    .graph
-                    .edges_connecting(caller_nx, nx)
-                    .next()?;
+                let edge_ref = self.graph.edges_connecting(caller_nx, nx).next()?;
                 Some((&self.graph[caller_nx], edge_ref.weight().as_str()))
             })
             .collect()
@@ -129,10 +126,7 @@ impl Store {
         self.graph
             .neighbors_directed(nx, Direction::Outgoing)
             .filter_map(|callee_nx| {
-                let edge_ref = self
-                    .graph
-                    .edges_connecting(nx, callee_nx)
-                    .next()?;
+                let edge_ref = self.graph.edges_connecting(nx, callee_nx).next()?;
                 Some((&self.graph[callee_nx], edge_ref.weight().as_str()))
             })
             .collect()
@@ -215,5 +209,171 @@ impl Store {
 impl Default for Store {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Edge, Span, Symbol};
+
+    fn make_sym(lang: &str, kind: &str, name: &str, file: &str) -> Symbol {
+        Symbol::new(
+            lang,
+            kind,
+            name,
+            &format!("{}::{}", file, name),
+            file,
+            Span::default(),
+        )
+    }
+
+    #[test]
+    fn insert_and_get() {
+        let mut store = Store::new();
+        let sym = make_sym("rust", "function", "main", "src/main.rs");
+        let id = sym.id;
+        store.insert_symbol(sym);
+        assert_eq!(store.symbol_count(), 1);
+        let got = store.get(&id).unwrap();
+        assert_eq!(got.name, "main");
+    }
+
+    #[test]
+    fn find_by_name_case_insensitive() {
+        let mut store = Store::new();
+        store.insert_symbol(make_sym("rust", "function", "MyFunc", "lib.rs"));
+        let results = store.find_by_name("myfunc");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "MyFunc");
+    }
+
+    #[test]
+    fn find_by_name_exact() {
+        let mut store = Store::new();
+        store.insert_symbol(make_sym("python", "function", "process", "a.py"));
+        store.insert_symbol(make_sym("python", "function", "process_data", "b.py"));
+        let exact = store.find_by_name_exact("process");
+        assert_eq!(exact.len(), 1);
+        assert_eq!(exact[0].name, "process");
+    }
+
+    #[test]
+    fn find_filtered_by_kind_and_lang() {
+        let mut store = Store::new();
+        store.insert_symbol(make_sym("rust", "function", "run", "lib.rs"));
+        store.insert_symbol(make_sym("rust", "struct", "Config", "lib.rs"));
+        store.insert_symbol(make_sym("python", "function", "run", "main.py"));
+
+        let fns = store.find_filtered("run", Some("function"), None);
+        assert_eq!(fns.len(), 2);
+
+        let rust_fns = store.find_filtered("run", Some("function"), Some("rust"));
+        assert_eq!(rust_fns.len(), 1);
+        assert_eq!(rust_fns[0].lang, "rust");
+    }
+
+    #[test]
+    fn insert_and_query_edges() {
+        let mut store = Store::new();
+        let a = make_sym("rust", "function", "caller", "lib.rs");
+        let b = make_sym("rust", "function", "callee", "lib.rs");
+        let a_id = a.id;
+        let b_id = b.id;
+        store.insert_symbol(a);
+        store.insert_symbol(b);
+
+        let edge = Edge {
+            from: a_id,
+            to: b_id,
+            kind: "calls".into(),
+        };
+        assert!(store.insert_edge(edge));
+        assert_eq!(store.edge_count(), 1);
+
+        let callees = store.callees(&a_id);
+        assert_eq!(callees.len(), 1);
+        assert_eq!(callees[0].0.name, "callee");
+        assert_eq!(callees[0].1, "calls");
+
+        let callers = store.callers(&b_id);
+        assert_eq!(callers.len(), 1);
+        assert_eq!(callers[0].0.name, "caller");
+    }
+
+    #[test]
+    fn insert_edge_missing_endpoint_returns_false() {
+        let mut store = Store::new();
+        let a = make_sym("rust", "function", "a", "lib.rs");
+        let a_id = a.id;
+        store.insert_symbol(a);
+        let fake_id = SymbolId::new("rust", "function", "nonexistent", "x.rs");
+        let edge = Edge {
+            from: a_id,
+            to: fake_id,
+            kind: "calls".into(),
+        };
+        assert!(!store.insert_edge(edge));
+    }
+
+    #[test]
+    fn remove_file() {
+        let mut store = Store::new();
+        store.insert_symbol(make_sym("rust", "function", "a", "lib.rs"));
+        store.insert_symbol(make_sym("rust", "function", "b", "lib.rs"));
+        store.insert_symbol(make_sym("rust", "function", "c", "main.rs"));
+        assert_eq!(store.symbol_count(), 3);
+
+        let removed = store.remove_file("lib.rs");
+        assert_eq!(removed, 2);
+        assert_eq!(store.symbol_count(), 1);
+        assert!(store.find_by_name("a").is_empty());
+        assert_eq!(store.find_by_name("c").len(), 1);
+    }
+
+    #[test]
+    fn serialize_deserialize_roundtrip() {
+        let mut store = Store::new();
+        let a = make_sym("rust", "function", "alpha", "lib.rs");
+        let b = make_sym("rust", "function", "beta", "lib.rs");
+        let a_id = a.id;
+        let b_id = b.id;
+        store.insert_symbol(a);
+        store.insert_symbol(b);
+        store.insert_edge(Edge {
+            from: a_id,
+            to: b_id,
+            kind: "calls".into(),
+        });
+
+        let bytes = store.serialize().unwrap();
+        let restored = Store::deserialize(&bytes).unwrap();
+        assert_eq!(restored.symbol_count(), 2);
+        assert_eq!(restored.edge_count(), 1);
+        assert_eq!(restored.get(&a_id).unwrap().name, "alpha");
+    }
+
+    #[test]
+    fn save_load_file() {
+        let mut store = Store::new();
+        store.insert_symbol(make_sym("go", "function", "main", "main.go"));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("graph.bin");
+        store.save(&path).unwrap();
+
+        let loaded = Store::load(&path).unwrap();
+        assert_eq!(loaded.symbol_count(), 1);
+        assert_eq!(loaded.find_by_name("main").len(), 1);
+    }
+
+    #[test]
+    fn by_file_index() {
+        let mut store = Store::new();
+        store.insert_symbol(make_sym("c", "function", "init", "core.c"));
+        store.insert_symbol(make_sym("c", "function", "run", "core.c"));
+        store.insert_symbol(make_sym("c", "function", "main", "main.c"));
+
+        let core_ids = store.by_file.get("core.c").unwrap();
+        assert_eq!(core_ids.len(), 2);
     }
 }

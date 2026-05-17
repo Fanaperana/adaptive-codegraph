@@ -108,16 +108,120 @@ pub fn format_neighborhood(store: &Store, neighborhood: &Neighborhood) -> String
     // List edges
     out.push_str("\nEdges:\n");
     for (from, to, kind) in &neighborhood.edges {
-        let from_name = store
-            .get(from)
-            .map(|s| s.name.as_str())
-            .unwrap_or("?");
-        let to_name = store
-            .get(to)
-            .map(|s| s.name.as_str())
-            .unwrap_or("?");
+        let from_name = store.get(from).map(|s| s.name.as_str()).unwrap_or("?");
+        let to_name = store.get(to).map(|s| s.name.as_str()).unwrap_or("?");
         out.push_str(&format!("  {} --[{}]--> {}\n", from_name, kind, to_name));
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Edge, Span, Symbol};
+    use crate::store::Store;
+
+    fn make_sym(name: &str, file: &str) -> Symbol {
+        Symbol::new(
+            "rust",
+            "function",
+            name,
+            &format!("{}::{}", file, name),
+            file,
+            Span::default(),
+        )
+    }
+
+    fn build_test_store() -> Store {
+        let mut store = Store::new();
+        let a = make_sym("main", "src/main.rs");
+        let b = make_sym("process", "src/lib.rs");
+        let c = make_sym("helper", "src/lib.rs");
+        let d = make_sym("util", "src/util.rs");
+        let a_id = a.id;
+        let b_id = b.id;
+        let c_id = c.id;
+        let d_id = d.id;
+        store.insert_symbol(a);
+        store.insert_symbol(b);
+        store.insert_symbol(c);
+        store.insert_symbol(d);
+        // main -> process -> helper, main -> util
+        store.insert_edge(Edge {
+            from: a_id,
+            to: b_id,
+            kind: "calls".into(),
+        });
+        store.insert_edge(Edge {
+            from: b_id,
+            to: c_id,
+            kind: "calls".into(),
+        });
+        store.insert_edge(Edge {
+            from: a_id,
+            to: d_id,
+            kind: "calls".into(),
+        });
+        store
+    }
+
+    #[test]
+    fn resolve_symbol_exact_match() {
+        let store = build_test_store();
+        let id = resolve_symbol(&store, "main").unwrap();
+        assert_eq!(store.get(&id).unwrap().name, "main");
+    }
+
+    #[test]
+    fn resolve_symbol_not_found() {
+        let store = build_test_store();
+        assert!(resolve_symbol(&store, "nonexistent").is_none());
+    }
+
+    #[test]
+    fn expand_neighborhood_depth_1() {
+        let store = build_test_store();
+        let main_id = resolve_symbol(&store, "main").unwrap();
+        let nbr = expand_neighborhood(&store, main_id, 1, 50);
+        // main + its direct neighbors (process, util)
+        assert!(nbr.nodes.len() >= 3);
+        assert!(!nbr.edges.is_empty());
+    }
+
+    #[test]
+    fn expand_neighborhood_depth_2() {
+        let store = build_test_store();
+        let main_id = resolve_symbol(&store, "main").unwrap();
+        let nbr = expand_neighborhood(&store, main_id, 2, 50);
+        // Should reach helper via main->process->helper
+        assert!(nbr.nodes.len() >= 4);
+    }
+
+    #[test]
+    fn expand_neighborhood_respects_cap() {
+        let store = build_test_store();
+        let main_id = resolve_symbol(&store, "main").unwrap();
+        // Cap=2: BFS starts with center (1 node), then explores neighbors.
+        // It may slightly exceed cap since it checks after popping, but
+        // should be significantly less than the total (4 nodes).
+        let nbr = expand_neighborhood(&store, main_id, 10, 2);
+        assert!(
+            nbr.nodes.len() < 4,
+            "Cap should limit expansion, got {}",
+            nbr.nodes.len()
+        );
+    }
+
+    #[test]
+    fn format_neighborhood_produces_output() {
+        let store = build_test_store();
+        let main_id = resolve_symbol(&store, "main").unwrap();
+        let nbr = expand_neighborhood(&store, main_id, 1, 50);
+        let text = format_neighborhood(&store, &nbr);
+        assert!(text.contains("Neighborhood"));
+        assert!(text.contains("main"));
+        assert!(text.contains("Nodes:"));
+        assert!(text.contains("Edges:"));
+    }
 }
