@@ -160,18 +160,9 @@ impl Config {
         cfg.base = Some(base.to_path_buf());
         cfg.languages = detect_languages(base);
 
-        // Auto-detect roots: look for src/, lib/, app/ directories
-        let candidate_dirs = ["src", "lib", "app", "pkg", "cmd", "internal"];
-        let mut roots = Vec::new();
-        for dir in &candidate_dirs {
-            if base.join(dir).is_dir() {
-                roots.push(PathBuf::from(*dir));
-            }
-        }
-        if roots.is_empty() {
-            roots.push(PathBuf::from("."));
-        }
-        cfg.roots = roots;
+        // Always index from the project root so we don't miss directories
+        // like crates/, packages/, modules/, etc.
+        cfg.roots = vec![PathBuf::from(".")];
 
         Ok(cfg)
     }
@@ -208,9 +199,10 @@ fn detect_languages(base: &Path) -> Vec<DetectedLanguage> {
             }
         });
 
-        let has_files = lang.extensions.iter().any(|ext| {
-            has_files_with_extension(base, ext)
-        });
+        let has_files = lang
+            .extensions
+            .iter()
+            .any(|ext| has_files_with_extension(base, ext));
 
         if has_marker || has_files {
             detected.push(DetectedLanguage {
@@ -231,12 +223,9 @@ fn has_files_with_extension(base: &Path, ext: &str) -> bool {
         std::fs::read_dir(dir)
             .ok()
             .map(|entries| {
-                entries.filter_map(|e| e.ok()).any(|e| {
-                    e.path()
-                        .extension()
-                        .map(|x| x == ext)
-                        .unwrap_or(false)
-                })
+                entries
+                    .filter_map(|e| e.ok())
+                    .any(|e| e.path().extension().map(|x| x == ext).unwrap_or(false))
             })
             .unwrap_or(false)
     };

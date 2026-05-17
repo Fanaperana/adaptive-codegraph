@@ -149,10 +149,7 @@ fn detect_changes(
     }
 
     // Fallback: mtime-based detection
-    mtime_diff_files(
-        base.to_str().unwrap_or("."),
-        prev_state.indexed_at.unwrap_or(0),
-    )
+    mtime_diff_files(config, prev_state.indexed_at.unwrap_or(0))
 }
 
 /// Use `git diff --name-status` to find changed/deleted files.
@@ -200,23 +197,30 @@ fn git_diff_files(root: &str, prev_head: &str) -> anyhow::Result<(Vec<PathBuf>, 
 }
 
 /// Fallback: find files modified after the given unix timestamp.
-fn mtime_diff_files(root: &str, since_epoch: u64) -> anyhow::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+fn mtime_diff_files(
+    config: &Config,
+    since_epoch: u64,
+) -> anyhow::Result<(Vec<PathBuf>, Vec<PathBuf>)> {
     let since = std::time::UNIX_EPOCH + std::time::Duration::from_secs(since_epoch);
+    let base = config.base.as_deref().unwrap_or(Path::new("."));
     let mut changed = Vec::new();
 
-    let walker = ignore::WalkBuilder::new(root)
-        .hidden(true)
-        .git_ignore(true)
-        .build();
+    for root in &config.roots {
+        let abs_root = base.join(root);
+        let walker = ignore::WalkBuilder::new(&abs_root)
+            .hidden(true)
+            .git_ignore(true)
+            .build();
 
-    for entry in walker.flatten() {
-        if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-            continue;
-        }
-        if let Ok(meta) = entry.metadata() {
-            if let Ok(mtime) = meta.modified() {
-                if mtime > since {
-                    changed.push(entry.into_path());
+        for entry in walker.flatten() {
+            if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                continue;
+            }
+            if let Ok(meta) = entry.metadata() {
+                if let Ok(mtime) = meta.modified() {
+                    if mtime > since {
+                        changed.push(entry.into_path());
+                    }
                 }
             }
         }
