@@ -6,8 +6,14 @@
 ; Structs
 (struct_item name: (type_identifier) @symbol.name) @symbol.def
 
+; Struct fields
+(field_declaration name: (field_identifier) @symbol.name) @symbol.def
+
 ; Enums
 (enum_item name: (type_identifier) @symbol.name) @symbol.def
+
+; Enum variants
+(enum_variant name: (identifier) @symbol.name) @symbol.def
 
 ; Traits
 (trait_item name: (type_identifier) @symbol.name) @symbol.def
@@ -26,3 +32,6 @@
 
 ; Modules
 (mod_item name: (identifier) @symbol.name) @symbol.def
+
+; Macro definitions
+(macro_definition name: (identifier) @symbol.name) @symbol.def

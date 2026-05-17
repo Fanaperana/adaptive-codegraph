@@ -210,17 +210,32 @@ impl Extractor for TreeSitterExtractor {
 /// Infer a kind string from the tree-sitter node type.
 fn infer_kind(node_kind: &str) -> String {
     match node_kind {
-        "function_definition" | "function_declaration" | "function_item" | "method_definition" => {
-            "function".to_string()
-        }
+        "function_definition"
+        | "function_declaration"
+        | "function_item"
+        | "method_definition"
+        | "method_declaration"
+        | "generator_function_declaration"
+        | "abstract_method_signature" => "function".to_string(),
         "class_definition" | "class_declaration" => "class".to_string(),
         "struct_item" | "struct_specifier" => "struct".to_string(),
-        "enum_item" | "enum_specifier" => "enum".to_string(),
-        "type_alias_declaration" | "type_item" => "type_alias".to_string(),
+        "enum_item" | "enum_specifier" | "enum_declaration" => "enum".to_string(),
+        "enum_variant" | "enumerator" | "enum_assignment" => "enum_variant".to_string(),
+        "type_alias_declaration" | "type_item" | "type_definition" => "type_alias".to_string(),
         "interface_declaration" => "interface".to_string(),
         "impl_item" => "impl".to_string(),
         "trait_item" => "trait".to_string(),
         "module" | "mod_item" => "module".to_string(),
+        "field_declaration" | "public_field_definition" | "field_definition" => "field".to_string(),
+        "macro_definition" | "preproc_def" | "preproc_function_def" => "macro".to_string(),
+        "const_item" | "const_spec" | "const_declaration" => "constant".to_string(),
+        "static_item" => "static".to_string(),
+        "union_specifier" => "union".to_string(),
+        "type_spec" | "type_declaration" => "type".to_string(),
+        "var_declaration" | "var_spec" => "variable".to_string(),
+        "decorated_definition" => "decorated".to_string(),
+        "lexical_declaration" | "variable_declarator" => "variable".to_string(),
+        "assignment" => "variable".to_string(),
         _ => "definition".to_string(),
     }
 }
