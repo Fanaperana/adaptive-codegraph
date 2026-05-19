@@ -38,7 +38,7 @@ A similar implementation to [mie-codegraph](https://github.com/mieweb/mie-codegr
 | CLI (index, search, callers, callees, neighborhood) | ✅ Complete |
 | MCP server (JSON-RPC 2.0 over stdio, 8 tools) | ✅ Complete |
 | Built-in grammars (C, JS, Rust, Python, TypeScript, Go) | ✅ Complete |
-| Fastembed semantic search (optional) | 🔨 Feature flag |
+| Fastembed semantic search | ✅ Default (opt-out with `--no-default-features`) |
 | Daemon (file-watching incremental reindex) | 🔨 Skeleton |
 
 ## � How It Works Under the Hood
