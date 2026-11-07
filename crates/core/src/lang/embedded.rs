@@ -34,6 +34,10 @@ pub fn toml_files() -> &'static [EmbeddedFile] {
             name: "typescript.toml",
             content: include_str!("../../../../languages/typescript.toml"),
         },
+        EmbeddedFile {
+            name: "tsx.toml",
+            content: include_str!("../../../../languages/tsx.toml"),
+        },
     ]
 }
 
@@ -87,6 +91,10 @@ pub fn query_files() -> &'static [EmbeddedFile] {
         EmbeddedFile {
             name: "typescript_edges.scm",
             content: include_str!("../../../../languages/queries/typescript_edges.scm"),
+        },
+        EmbeddedFile {
+            name: "tsx_edges.scm",
+            content: include_str!("../../../../languages/queries/tsx_edges.scm"),
         },
     ]
 }

@@ -1,0 +1,26 @@
+# caller -> callee  (anchor ids from `@def` markers)
+main -> Store::new
+main -> Store::save
+main -> Cache::new
+main -> Cache::save
+main -> Store::len
+main -> Cache::len
+main -> util::helper
+main -> other::helper
+main -> run
+main -> util::checksum
+run -> search
+search -> search
+process -> util::checksum
+process -> Store::save
+tests::test_search -> search
+tests::test_process -> Store::new
+tests::test_process -> process
+tests::test_process -> Store::len
+Store::save -> util::checksum
+Store::save -> Store::flush
+Store::persist -> Store::len
+Cache::save -> Cache::evict
+Cache::evict -> Cache::new
+Cache::evict -> Cache::len
+util::helper -> util::checksum

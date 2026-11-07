@@ -1,4 +1,4 @@
 id = "javascript"
 name = "JavaScript"
-extensions = ["js", "jsx", "mjs"]
+extensions = ["js", "jsx", "mjs", "cjs"]
 grammar = "builtin"

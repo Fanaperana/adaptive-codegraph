@@ -1,0 +1,351 @@
+{
+  "label": "phase1",
+  "fixtures": [
+    {
+      "name": "go",
+      "accuracy": {
+        "1": {
+          "tp": 17,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "2": {
+          "tp": 17,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "3": {
+          "tp": 17,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "false_positives": [],
+      "false_negatives": [],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 0,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "py-holdout",
+      "accuracy": {
+        "1": {
+          "tp": 8,
+          "fp": 0,
+          "fn_": 4,
+          "precision": 1.0,
+          "recall": 0.6666666666666666,
+          "f1": 0.8
+        },
+        "2": {
+          "tp": 6,
+          "fp": 0,
+          "fn_": 6,
+          "precision": 1.0,
+          "recall": 0.5,
+          "f1": 0.6666666666666666
+        },
+        "3": {
+          "tp": 6,
+          "fp": 0,
+          "fn_": 6,
+          "precision": 1.0,
+          "recall": 0.5,
+          "f1": 0.6666666666666666
+        }
+      },
+      "false_positives": [],
+      "false_negatives": [
+        "Repository::find -> Database::get",
+        "Service::register -> Repository::save",
+        "UserRepo::by_name -> Repository::find",
+        "UserRepo::validate -> Repository::validate"
+      ],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 0,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "python",
+      "accuracy": {
+        "1": {
+          "tp": 22,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "2": {
+          "tp": 22,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "3": {
+          "tp": 22,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "false_positives": [],
+      "false_negatives": [],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 0,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "rs-holdout",
+      "accuracy": {
+        "1": {
+          "tp": 5,
+          "fp": 0,
+          "fn_": 2,
+          "precision": 1.0,
+          "recall": 0.7142857142857143,
+          "f1": 0.8333333333333333
+        },
+        "2": {
+          "tp": 5,
+          "fp": 0,
+          "fn_": 2,
+          "precision": 1.0,
+          "recall": 0.7142857142857143,
+          "f1": 0.8333333333333333
+        },
+        "3": {
+          "tp": 5,
+          "fp": 0,
+          "fn_": 2,
+          "precision": 1.0,
+          "recall": 0.7142857142857143,
+          "f1": 0.8333333333333333
+        }
+      },
+      "false_positives": [],
+      "false_negatives": [
+        "Shape::describe -> Shape::area",
+        "total_area -> Circle::area"
+      ],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 0,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "rust",
+      "accuracy": {
+        "1": {
+          "tp": 25,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "2": {
+          "tp": 25,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "3": {
+          "tp": 25,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "false_positives": [],
+      "false_negatives": [],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 0,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "ts-holdout",
+      "accuracy": {
+        "1": {
+          "tp": 9,
+          "fp": 0,
+          "fn_": 3,
+          "precision": 1.0,
+          "recall": 0.75,
+          "f1": 0.8571428571428571
+        },
+        "2": {
+          "tp": 9,
+          "fp": 0,
+          "fn_": 3,
+          "precision": 1.0,
+          "recall": 0.75,
+          "f1": 0.8571428571428571
+        },
+        "3": {
+          "tp": 9,
+          "fp": 0,
+          "fn_": 3,
+          "precision": 1.0,
+          "recall": 0.75,
+          "f1": 0.8571428571428571
+        }
+      },
+      "false_positives": [],
+      "false_negatives": [
+        "App::start -> Logger::log",
+        "AuditLogger::handle -> Logger::log",
+        "EventBus::publish -> Listener::handle"
+      ],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 0,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "typescript",
+      "accuracy": {
+        "1": {
+          "tp": 20,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "2": {
+          "tp": 20,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "3": {
+          "tp": 20,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "false_positives": [],
+      "false_negatives": [],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 0,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    }
+  ],
+  "overall": {
+    "all@1": {
+      "tp": 106,
+      "fp": 0,
+      "fn_": 9,
+      "precision": 1.0,
+      "recall": 0.9217391304347826,
+      "f1": 0.9592760180995475
+    },
+    "all@2": {
+      "tp": 104,
+      "fp": 0,
+      "fn_": 11,
+      "precision": 1.0,
+      "recall": 0.9043478260869565,
+      "f1": 0.9497716894977168
+    },
+    "all@3": {
+      "tp": 104,
+      "fp": 0,
+      "fn_": 11,
+      "precision": 1.0,
+      "recall": 0.9043478260869565,
+      "f1": 0.9497716894977168
+    },
+    "design@1": {
+      "tp": 84,
+      "fp": 0,
+      "fn_": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "design@2": {
+      "tp": 84,
+      "fp": 0,
+      "fn_": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "design@3": {
+      "tp": 84,
+      "fp": 0,
+      "fn_": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "holdout@1": {
+      "tp": 22,
+      "fp": 0,
+      "fn_": 9,
+      "precision": 1.0,
+      "recall": 0.7096774193548387,
+      "f1": 0.8301886792452831
+    },
+    "holdout@2": {
+      "tp": 20,
+      "fp": 0,
+      "fn_": 11,
+      "precision": 1.0,
+      "recall": 0.6451612903225806,
+      "f1": 0.7843137254901961
+    },
+    "holdout@3": {
+      "tp": 20,
+      "fp": 0,
+      "fn_": 11,
+      "precision": 1.0,
+      "recall": 0.6451612903225806,
+      "f1": 0.7843137254901961
+    }
+  },
+  "repos": []
+}

@@ -313,8 +313,8 @@ fn call_tool(ctx: &Ctx, name: &str, args: &Value) -> std::result::Result<Value, 
                         "kind": s.kind,
                         "lang": s.lang,
                         "file": s.file,
-                        "start_line": s.span.start_line,
-                        "end_line": s.span.end_line,
+                        "start_line": s.span.start_line + 1,
+                        "end_line": s.span.end_line + 1,
                         "signature": s.signature,
                     })
                 })
@@ -332,8 +332,8 @@ fn call_tool(ctx: &Ctx, name: &str, args: &Value) -> std::result::Result<Value, 
                     "lang": s.lang,
                     "file": s.file,
                     "fqname": s.fqname,
-                    "start_line": s.span.start_line,
-                    "end_line": s.span.end_line,
+                    "start_line": s.span.start_line + 1,
+                    "end_line": s.span.end_line + 1,
                     "signature": s.signature,
                     "doc": s.doc,
                 })),
@@ -345,13 +345,15 @@ fn call_tool(ctx: &Ctx, name: &str, args: &Value) -> std::result::Result<Value, 
             let callers = store.callers(&id);
             let hits: Vec<Value> = callers
                 .iter()
-                .map(|(s, kind)| {
+                .map(|(s, e)| {
                     json!({
                         "id": s.id.to_hex(),
                         "name": s.name,
                         "kind": s.kind,
                         "file": s.file,
-                        "edge_kind": kind,
+                        "edge_kind": e.kind,
+                        "line": e.line + 1,
+                        "confidence": e.confidence,
                     })
                 })
                 .collect();
@@ -362,13 +364,15 @@ fn call_tool(ctx: &Ctx, name: &str, args: &Value) -> std::result::Result<Value, 
             let callees = store.callees(&id);
             let hits: Vec<Value> = callees
                 .iter()
-                .map(|(s, kind)| {
+                .map(|(s, e)| {
                     json!({
                         "id": s.id.to_hex(),
                         "name": s.name,
                         "kind": s.kind,
                         "file": s.file,
-                        "edge_kind": kind,
+                        "edge_kind": e.kind,
+                        "line": e.line + 1,
+                        "confidence": e.confidence,
                     })
                 })
                 .collect();

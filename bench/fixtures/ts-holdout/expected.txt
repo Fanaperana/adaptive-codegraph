@@ -1,0 +1,14 @@
+# Held-out fixture: written after the Phase 1 resolver. Needs inheritance,
+# interface dispatch, default imports, and field initializer types.
+EventBus::publish -> Listener::handle
+Logger::log -> Logger::format
+AuditLogger::handle -> Logger::log
+createLogger -> Logger
+App::bus -> EventBus
+App::logger -> createLogger
+App::start -> EventBus::subscribe
+App::start -> AuditLogger
+App::start -> EventBus::publish
+App::start -> Logger::log
+boot -> App
+boot -> App::start

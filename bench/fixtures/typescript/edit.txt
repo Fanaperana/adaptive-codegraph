@@ -1,0 +1,6 @@
+src/util.ts
+
+export function extra(): number {
+  helper();
+  return checksum("e");
+}

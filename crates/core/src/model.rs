@@ -1,9 +1,14 @@
 //! # Data Model
 //!
-//! Language-agnostic symbol and edge types. Unlike mie-codegraph which uses
-//! fixed Rust enums for `SymbolKind` and `EdgeKind`, adaptive-codegraph uses
-//! **string-based kinds** so new languages and edge types can be added via
-//! config files without recompiling.
+//! Language-agnostic symbol and edge types. Kinds are **strings** so new
+//! languages and edge types can be added via config files without recompiling.
+//!
+//! Indexing happens in two stages:
+//! 1. **Extraction** (per file, parallel): a [`FileFacts`] holding the file's
+//!    symbols plus *raw* facts — call sites ([`RawRef`]), imports
+//!    ([`Import`]) and local variable types ([`Binding`]).
+//! 2. **Resolution** (whole project): raw facts are turned into [`Edge`]s
+//!    using scopes, imports and type hints (see `resolve.rs`).
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -14,7 +19,9 @@ use std::fmt;
 ///
 /// Computed as `BLAKE3(lang + ":" + kind + ":" + fqname + ":" + file)`
 /// truncated to 16 bytes. Stable across edits that don't rename/move.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default,
+)]
 pub struct SymbolId(pub [u8; 16]);
 
 impl SymbolId {
@@ -61,8 +68,6 @@ impl fmt::Display for SymbolId {
     }
 }
 
-// ── Inline hex helper ───────────────────────────────────────────────────
-
 mod hex {
     pub fn encode(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -79,8 +84,8 @@ mod hex {
 
 // ── Span ────────────────────────────────────────────────────────────────
 
-/// Byte and line range of a symbol in its source file.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+/// Byte and line range of a symbol in its source file. Lines are 0-based.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Span {
     pub start_byte: usize,
     pub end_byte: usize,
@@ -88,24 +93,43 @@ pub struct Span {
     pub end_line: u32,
 }
 
+impl Span {
+    pub fn contains(&self, byte: usize) -> bool {
+        self.start_byte <= byte && byte < self.end_byte
+    }
+
+    pub fn len(&self) -> usize {
+        self.end_byte.saturating_sub(self.start_byte)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 // ── Symbol ──────────────────────────────────────────────────────────────
 
+/// Symbol kinds that can be the target of a call.
+pub const CALLABLE_KINDS: &[&str] = &["function", "method", "macro", "class", "struct"];
+
+/// Symbol kinds that define a type (and can own members).
+pub const TYPE_KINDS: &[&str] = &[
+    "class", "struct", "interface", "trait", "enum", "union", "type", "type_alias", "impl",
+];
+
 /// A named entity extracted from source code.
-///
-/// `kind` and `lang` are free-form strings defined by language configs,
-/// e.g. `kind = "function"`, `lang = "python"`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Symbol {
     pub id: SymbolId,
     /// Language identifier: "c", "python", "rust", "go", "javascript", etc.
     pub lang: String,
-    /// Kind: "function", "class", "struct", "method", "module", "table", etc.
+    /// Kind: "function", "method", "class", "struct", "field", "file", ...
     pub kind: String,
     /// Short display name, e.g. `process_patient`.
     pub name: String,
-    /// Fully-qualified name for disambiguation, e.g. `src/patient.py::Patient::process`.
+    /// Fully-qualified name, e.g. `src/patient.py::Patient::process`.
     pub fqname: String,
-    /// Workspace-relative file path.
+    /// Workspace-relative file path with forward slashes.
     pub file: String,
     /// Location in source.
     pub span: Span,
@@ -113,6 +137,12 @@ pub struct Symbol {
     pub signature: Option<String>,
     /// Optional doc comment / docstring.
     pub doc: Option<String>,
+    /// Enclosing scope path inside the file, e.g. `Store` or `Outer::Inner`.
+    pub container: Option<String>,
+    /// Declared type: return type for functions, field/variable type otherwise.
+    pub type_hint: Option<String>,
+    /// Innermost enclosing symbol (the file symbol for top-level items).
+    pub parent: Option<SymbolId>,
 }
 
 impl Symbol {
@@ -141,40 +171,142 @@ impl Symbol {
             span,
             signature: None,
             doc: None,
+            container: None,
+            type_hint: None,
+            parent: None,
         }
+    }
+
+    /// 1-based start line, for display.
+    pub fn line(&self) -> u32 {
+        self.span.start_line + 1
+    }
+
+    pub fn is_callable(&self) -> bool {
+        CALLABLE_KINDS.contains(&self.kind.as_str())
+    }
+
+    pub fn is_type(&self) -> bool {
+        TYPE_KINDS.contains(&self.kind.as_str())
+    }
+
+    /// The last segment of the container path (the owning type/module name).
+    pub fn owner(&self) -> Option<&str> {
+        self.container.as_deref().map(|c| c.rsplit("::").next().unwrap_or(c))
     }
 }
 
 // ── Edge ────────────────────────────────────────────────────────────────
 
+/// How sure the resolver is about an edge.
+pub mod confidence {
+    /// Name-only guess (unique project-wide name, receiver type unknown).
+    pub const GUESS: u8 = 1;
+    /// Inferred (e.g. same-package lookup, ambiguous name narrowed by file).
+    pub const INFERRED: u8 = 2;
+    /// Resolved through scope, import, `self`, or a known receiver type.
+    pub const CERTAIN: u8 = 3;
+}
+
 /// A directed relationship between two symbols.
-///
-/// `kind` is a free-form string: "calls", "imports", "inherits",
-/// "implements", "renders", "reads_table", "defines", etc.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Edge {
     pub from: SymbolId,
     pub to: SymbolId,
     /// Relationship type: "calls", "imports", "inherits", "implements", etc.
     pub kind: String,
+    /// See [`confidence`].
+    pub confidence: u8,
+    /// 0-based line of the first occurrence.
+    pub line: u32,
+    /// Number of occurrences merged into this edge.
+    pub count: u32,
 }
 
-/// An edge whose target hasn't been resolved to a SymbolId yet.
-#[derive(Clone, Debug)]
-pub struct UnresolvedEdge {
+impl Edge {
+    pub fn new(from: SymbolId, to: SymbolId, kind: &str) -> Self {
+        Self {
+            from,
+            to,
+            kind: kind.to_string(),
+            confidence: confidence::CERTAIN,
+            line: 0,
+            count: 1,
+        }
+    }
+}
+
+// ── Raw facts (pre-resolution) ──────────────────────────────────────────
+
+/// A reference (call, instantiation, ...) found in source, not yet resolved.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RawRef {
+    /// Innermost symbol containing the reference.
     pub from: SymbolId,
-    pub to_name: String,
+    /// Referenced name, e.g. `save`.
+    pub name: String,
+    /// Edge kind to create, e.g. "calls".
     pub kind: String,
+    /// Path qualifier, e.g. `Store` in `Store::new()` or `util` in `util::f()`.
+    pub qualifier: Option<String>,
+    /// Receiver expression, e.g. `self.items` in `self.items.push()`.
+    pub receiver: Option<String>,
+    /// Restrict targets to this symbol kind (e.g. "macro").
+    pub target_kind: Option<String>,
+    /// 0-based line.
+    pub line: u32,
+}
+
+/// An import / use statement binding a local name.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Import {
+    /// The name bound in this file (alias, imported item, or module alias).
+    pub local: String,
+    /// Module path as written, e.g. `crate::util`, `./store`, `.util`.
+    pub path: String,
+    /// Imported item; `None` when the whole module is bound to `local`.
+    pub item: Option<String>,
+    /// 0-based line.
+    pub line: u32,
+}
+
+/// A local variable or parameter whose type can be inferred.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Binding {
+    /// Innermost symbol containing the binding (its scope).
+    pub scope: SymbolId,
+    pub name: String,
+    /// Declared or constructed type, e.g. `Store`.
+    pub type_name: Option<String>,
+    /// Callee expression whose return type gives the type, e.g. `Store::new`.
+    pub call: Option<String>,
+}
+
+/// Everything extracted from one file.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct FileFacts {
+    pub file: String,
+    pub lang: String,
+    /// Modification time (ns since epoch) and size, for change detection.
+    pub mtime: u128,
+    pub size: u64,
+    pub symbols: Vec<Symbol>,
+    pub refs: Vec<RawRef>,
+    pub imports: Vec<Import>,
+    pub bindings: Vec<Binding>,
 }
 
 // ── Extraction result ───────────────────────────────────────────────────
 
-/// The output of parsing a single file: symbols found + edges discovered.
+/// The output of parsing a single file.
 #[derive(Clone, Debug, Default)]
 pub struct ExtractionResult {
     pub symbols: Vec<Symbol>,
+    /// Edges already resolved to concrete symbols (e.g. by plugins).
     pub edges: Vec<Edge>,
-    pub unresolved_edges: Vec<UnresolvedEdge>,
+    pub refs: Vec<RawRef>,
+    pub imports: Vec<Import>,
+    pub bindings: Vec<Binding>,
 }
 
 impl ExtractionResult {
@@ -186,26 +318,29 @@ impl ExtractionResult {
         self.symbols.push(sym);
     }
 
+    /// Add an unresolved reference from `from` to a symbol called `to_name`.
     pub fn add_edge(&mut self, from: SymbolId, to_name: &str, kind: &str) {
-        self.unresolved_edges.push(UnresolvedEdge {
+        self.refs.push(RawRef {
             from,
-            to_name: to_name.to_string(),
+            name: to_name.to_string(),
             kind: kind.to_string(),
+            qualifier: None,
+            receiver: None,
+            target_kind: None,
+            line: 0,
         });
     }
 
     pub fn add_resolved_edge(&mut self, from: SymbolId, to: SymbolId, kind: &str) {
-        self.edges.push(Edge {
-            from,
-            to,
-            kind: kind.to_string(),
-        });
+        self.edges.push(Edge::new(from, to, kind));
     }
 
     pub fn merge(&mut self, other: ExtractionResult) {
         self.symbols.extend(other.symbols);
         self.edges.extend(other.edges);
-        self.unresolved_edges.extend(other.unresolved_edges);
+        self.refs.extend(other.refs);
+        self.imports.extend(other.imports);
+        self.bindings.extend(other.bindings);
     }
 }
 
@@ -236,5 +371,12 @@ mod tests {
         let a = SymbolId::new("c", "function", "main", "main.c");
         let b = SymbolId::new("c", "function", "main", "other.c");
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn owner_is_last_container_segment() {
+        let mut s = Symbol::new("rust", "method", "new", "a.rs::m::Store::new", "a.rs", Span::default());
+        s.container = Some("m::Store".into());
+        assert_eq!(s.owner(), Some("Store"));
     }
 }

@@ -3,6 +3,18 @@
 version = 4
 
 [[package]]
+name = "adaptive-codegraph-bench"
+version = "0.1.0"
+dependencies = [
+ "adaptive-codegraph-core",
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "adaptive-codegraph-cli"
 version = "0.1.0"
 dependencies = [

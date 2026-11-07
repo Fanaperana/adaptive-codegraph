@@ -121,6 +121,28 @@ impl VectorIndex {
         scored
     }
 
+    /// Vector dimension.
+    pub fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// Remove the vectors of the given symbols.
+    pub fn remove(&mut self, ids: &std::collections::HashSet<SymbolId>) {
+        if ids.is_empty() {
+            return;
+        }
+        let mut keep_ids = Vec::with_capacity(self.ids.len());
+        let mut keep_vecs = Vec::with_capacity(self.vectors.len());
+        for (id, v) in self.ids.drain(..).zip(self.vectors.drain(..)) {
+            if !ids.contains(&id) {
+                keep_ids.push(id);
+                keep_vecs.push(v);
+            }
+        }
+        self.ids = keep_ids;
+        self.vectors = keep_vecs;
+    }
+
     /// Number of vectors in the index.
     pub fn len(&self) -> usize {
         self.ids.len()
@@ -154,6 +176,11 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         return 0.0;
     }
     dot / (norm_a * norm_b)
+}
+
+/// Text that represents a symbol for embedding.
+pub fn embed_text(sym: &crate::model::Symbol) -> String {
+    sym.name.clone()
 }
 
 /// Create the appropriate embedder based on feature flags.

@@ -8,7 +8,37 @@ pub mod plugin;
 pub mod treesitter;
 
 use crate::model::ExtractionResult;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+/// How a language scopes names across files. Set in the language `.toml`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct LangProfile {
+    /// `"file"` (default): a module is a file (Rust, Python, TS, JS).
+    /// `"directory"`: a module/package is a directory (Go).
+    #[serde(default = "default_module_mode")]
+    pub module_mode: String,
+    /// `"import"` (default): names from other modules must be imported.
+    /// `"global"`: top-level names are visible everywhere (C).
+    #[serde(default = "default_scope")]
+    pub scope: String,
+}
+
+fn default_module_mode() -> String {
+    "file".into()
+}
+fn default_scope() -> String {
+    "import".into()
+}
+
+impl Default for LangProfile {
+    fn default() -> Self {
+        Self {
+            module_mode: default_module_mode(),
+            scope: default_scope(),
+        }
+    }
+}
 
 /// Trait for language-specific symbol/edge extractors.
 ///
@@ -26,6 +56,11 @@ pub trait Extractor: Send + Sync {
     /// - `path`: workspace-relative file path
     /// - `content`: file contents as bytes
     fn extract(&self, path: &Path, content: &[u8]) -> anyhow::Result<ExtractionResult>;
+
+    /// Cross-file scoping rules for this language.
+    fn profile(&self) -> LangProfile {
+        LangProfile::default()
+    }
 }
 
 /// Registry of all available extractors.
@@ -73,6 +108,14 @@ impl ExtractorRegistry {
     /// List all registered languages.
     pub fn languages(&self) -> Vec<&str> {
         self.extractors.iter().map(|e| e.language()).collect()
+    }
+
+    /// Scoping profile of every registered language.
+    pub fn profiles(&self) -> std::collections::HashMap<String, LangProfile> {
+        self.extractors
+            .iter()
+            .map(|e| (e.language().to_string(), e.profile()))
+            .collect()
     }
 }
 

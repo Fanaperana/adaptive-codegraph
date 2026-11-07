@@ -1,0 +1,14 @@
+# Held-out fixture: written after the Phase 1 resolver. Needs inheritance,
+# super(), and attribute types assigned in __init__.
+Repository::find -> Database::get
+Repository::save -> Repository::validate
+Repository::save -> Database::put
+UserRepo::validate -> Repository::validate
+UserRepo::by_name -> Repository::find
+Service::__init__ -> UserRepo
+Service::register -> Repository::save
+Service::register -> UserRepo::by_name
+make_service -> connect
+make_service -> Service
+make_service -> Service::register
+connect -> Database

@@ -1,41 +1,97 @@
-//! # In-Memory Graph Store
+//! # Graph Store
 //!
-//! Holds the symbol graph (petgraph) with side-table indexes for O(1) lookup
-//! by ID, file, and name. Persistence via bincode.
+//! Holds per-file facts plus the resolved symbol graph (petgraph) with side
+//! indexes for O(1) lookup by ID, file, and name. Persistence via bincode.
 
-use crate::model::{Edge, Symbol, SymbolId};
+use crate::extract::LangProfile;
+use crate::model::{Edge, FileFacts, Symbol, SymbolId};
+use crate::resolve::{self, ResolveStats};
 use ahash::AHashMap;
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
+use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 use petgraph::Direction;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
 
-/// Serialization-friendly snapshot of the graph.
+/// Bump when the on-disk format changes; older indexes must be rebuilt.
+pub const FORMAT_VERSION: u32 = 2;
+
+/// Data carried by a graph edge.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EdgeData {
+    pub kind: String,
+    /// 1 = guess, 2 = inferred, 3 = certain. See `model::confidence`.
+    pub confidence: u8,
+    /// 0-based line of the first occurrence.
+    pub line: u32,
+    /// Number of occurrences.
+    pub count: u32,
+}
+
 #[derive(Serialize, Deserialize)]
-pub struct SerializedStore {
-    pub symbols: Vec<Symbol>,
-    pub edges: Vec<Edge>,
+struct SerializedStore {
+    version: u32,
+    facts: Vec<FileFacts>,
+    edges: Vec<Edge>,
+    profiles: HashMap<String, LangProfile>,
+    stats: ResolveStats,
 }
 
 /// The in-memory graph with side indexes.
+#[derive(Default)]
 pub struct Store {
-    pub graph: StableDiGraph<Symbol, String>,
+    pub graph: StableDiGraph<Symbol, EdgeData>,
     pub by_id: AHashMap<SymbolId, NodeIndex>,
     pub by_file: AHashMap<String, Vec<SymbolId>>,
     pub by_name_ci: AHashMap<String, Vec<SymbolId>>,
+    /// Raw per-file facts, keyed by workspace-relative path.
+    pub facts: BTreeMap<String, FileFacts>,
+    pub profiles: HashMap<String, LangProfile>,
+    pub stats: ResolveStats,
 }
 
 impl Store {
     pub fn new() -> Self {
-        Self {
-            graph: StableDiGraph::new(),
-            by_id: AHashMap::new(),
-            by_file: AHashMap::new(),
-            by_name_ci: AHashMap::new(),
-        }
+        Self::default()
     }
 
-    /// Insert a symbol into the graph. Returns the node index.
+    /// Build a store from per-file facts, resolving all references.
+    pub fn from_facts(
+        facts: BTreeMap<String, FileFacts>,
+        profiles: HashMap<String, LangProfile>,
+    ) -> Self {
+        let mut s = Self {
+            facts,
+            profiles,
+            ..Default::default()
+        };
+        s.rebuild();
+        s
+    }
+
+    /// Rebuild the graph from `facts` (re-runs resolution).
+    pub fn rebuild(&mut self) {
+        self.graph = StableDiGraph::new();
+        self.by_id.clear();
+        self.by_file.clear();
+        self.by_name_ci.clear();
+        let syms: Vec<Symbol> = self.facts.values().flat_map(|f| f.symbols.iter().cloned()).collect();
+        for s in syms {
+            self.insert_symbol(s);
+        }
+        let (edges, stats) = resolve::resolve(&self.facts, &self.profiles);
+        for e in edges {
+            self.add_edge_raw(e);
+        }
+        self.stats = stats;
+    }
+
+    /// Insert a symbol into the graph. Returns the node index. Inserting an
+    /// ID that already exists returns the existing node.
     pub fn insert_symbol(&mut self, sym: Symbol) -> NodeIndex {
+        if let Some(&nx) = self.by_id.get(&sym.id) {
+            return nx;
+        }
         let id = sym.id;
         let file = sym.file.clone();
         let name_lower = sym.name.to_lowercase();
@@ -47,16 +103,42 @@ impl Store {
         nx
     }
 
-    /// Insert an edge. Both endpoints must already exist in the graph.
+    fn add_edge_raw(&mut self, edge: Edge) -> bool {
+        let (Some(&a), Some(&b)) = (self.by_id.get(&edge.from), self.by_id.get(&edge.to)) else {
+            return false;
+        };
+        self.graph.add_edge(
+            a,
+            b,
+            EdgeData {
+                kind: edge.kind,
+                confidence: edge.confidence,
+                line: edge.line,
+                count: edge.count,
+            },
+        );
+        true
+    }
+
+    /// Insert an edge, merging with an existing edge of the same kind between
+    /// the same symbols. Both endpoints must already exist.
     pub fn insert_edge(&mut self, edge: Edge) -> bool {
-        if let (Some(&from_nx), Some(&to_nx)) =
-            (self.by_id.get(&edge.from), self.by_id.get(&edge.to))
-        {
-            self.graph.add_edge(from_nx, to_nx, edge.kind.clone());
-            true
-        } else {
-            false
+        let (Some(&a), Some(&b)) = (self.by_id.get(&edge.from), self.by_id.get(&edge.to)) else {
+            return false;
+        };
+        let existing = self
+            .graph
+            .edges_connecting(a, b)
+            .find(|e| e.weight().kind == edge.kind)
+            .map(|e| e.id());
+        if let Some(eid) = existing {
+            let w = &mut self.graph[eid];
+            w.confidence = w.confidence.max(edge.confidence);
+            w.line = w.line.min(edge.line);
+            w.count += edge.count;
+            return true;
         }
+        self.add_edge_raw(edge)
     }
 
     /// Look up a symbol by ID.
@@ -77,6 +159,14 @@ impl Store {
                 }
             }
         }
+        // Exact matches first, then shorter names, then stable order.
+        results.sort_by(|a, b| {
+            let ea = a.name.eq_ignore_ascii_case(needle);
+            let eb = b.name.eq_ignore_ascii_case(needle);
+            eb.cmp(&ea)
+                .then(a.name.len().cmp(&b.name.len()))
+                .then(a.fqname.cmp(&b.fqname))
+        });
         results
     }
 
@@ -104,42 +194,76 @@ impl Store {
             .collect()
     }
 
-    /// Get all symbols that call/reference the given symbol (incoming edges).
-    pub fn callers(&self, id: &SymbolId) -> Vec<(&Symbol, &str)> {
+    /// All incoming edges of a symbol.
+    pub fn edges_in(&self, id: &SymbolId) -> Vec<(&Symbol, &EdgeData)> {
         let Some(&nx) = self.by_id.get(id) else {
             return Vec::new();
         };
         self.graph
-            .neighbors_directed(nx, Direction::Incoming)
-            .filter_map(|caller_nx| {
-                let edge_ref = self.graph.edges_connecting(caller_nx, nx).next()?;
-                Some((&self.graph[caller_nx], edge_ref.weight().as_str()))
-            })
+            .edges_directed(nx, Direction::Incoming)
+            .map(|e| (&self.graph[e.source()], e.weight()))
             .collect()
     }
 
-    /// Get all symbols that the given symbol calls/references (outgoing edges).
-    pub fn callees(&self, id: &SymbolId) -> Vec<(&Symbol, &str)> {
+    /// All outgoing edges of a symbol.
+    pub fn edges_out(&self, id: &SymbolId) -> Vec<(&Symbol, &EdgeData)> {
         let Some(&nx) = self.by_id.get(id) else {
             return Vec::new();
         };
         self.graph
-            .neighbors_directed(nx, Direction::Outgoing)
-            .filter_map(|callee_nx| {
-                let edge_ref = self.graph.edges_connecting(nx, callee_nx).next()?;
-                Some((&self.graph[callee_nx], edge_ref.weight().as_str()))
+            .edges_directed(nx, Direction::Outgoing)
+            .map(|e| (&self.graph[e.target()], e.weight()))
+            .collect()
+    }
+
+    /// Symbols that call the given symbol.
+    pub fn callers(&self, id: &SymbolId) -> Vec<(&Symbol, &EdgeData)> {
+        let mut v: Vec<_> = self.edges_in(id).into_iter().filter(|(_, e)| e.kind == "calls").collect();
+        v.sort_by(|a, b| (&a.0.file, a.1.line).cmp(&(&b.0.file, b.1.line)));
+        v
+    }
+
+    /// Symbols called by the given symbol.
+    pub fn callees(&self, id: &SymbolId) -> Vec<(&Symbol, &EdgeData)> {
+        let mut v: Vec<_> = self.edges_out(id).into_iter().filter(|(_, e)| e.kind == "calls").collect();
+        v.sort_by_key(|(_, e)| e.line);
+        v
+    }
+
+    /// Direct children (members) of a symbol.
+    pub fn children(&self, id: &SymbolId) -> Vec<&Symbol> {
+        let Some(sym) = self.get(id) else { return Vec::new() };
+        let mut v: Vec<&Symbol> = self
+            .by_file
+            .get(&sym.file)
+            .map(|ids| ids.iter().filter_map(|i| self.get(i)).filter(|s| s.parent == Some(*id)).collect())
+            .unwrap_or_default();
+        v.sort_by_key(|s| s.span.start_byte);
+        v
+    }
+
+    /// Every edge in the graph.
+    pub fn all_edges(&self) -> Vec<Edge> {
+        self.graph
+            .edge_references()
+            .map(|e| Edge {
+                from: self.graph[e.source()].id,
+                to: self.graph[e.target()].id,
+                kind: e.weight().kind.clone(),
+                confidence: e.weight().confidence,
+                line: e.weight().line,
+                count: e.weight().count,
             })
             .collect()
     }
 
-    /// Remove all symbols from a given file (for incremental reindex).
-    /// Returns the number of symbols removed.
+    /// Remove all symbols from a given file. Returns the number removed.
     pub fn remove_file(&mut self, file: &str) -> usize {
+        self.facts.remove(file);
         let mut removed = 0;
         if let Some(ids) = self.by_file.remove(file) {
             for id in &ids {
                 if let Some(nx) = self.by_id.remove(id) {
-                    // Get name before removing node
                     let name = self.graph[nx].name.to_lowercase();
                     self.graph.remove_node(nx);
                     removed += 1;
@@ -151,6 +275,7 @@ impl Store {
         }
         removed
     }
+
     pub fn symbol_count(&self) -> usize {
         self.graph.node_count()
     }
@@ -160,34 +285,42 @@ impl Store {
         self.graph.edge_count()
     }
 
+    pub fn file_count(&self) -> usize {
+        self.facts.len()
+    }
+
     /// Serialize to bytes for persistence.
     pub fn serialize(&self) -> anyhow::Result<Vec<u8>> {
-        let symbols: Vec<Symbol> = self.graph.node_weights().cloned().collect();
-        let edges: Vec<Edge> = self
-            .graph
-            .edge_indices()
-            .filter_map(|eix| {
-                let (a, b) = self.graph.edge_endpoints(eix)?;
-                Some(Edge {
-                    from: self.graph[a].id,
-                    to: self.graph[b].id,
-                    kind: self.graph[eix].clone(),
-                })
-            })
-            .collect();
-        let ss = SerializedStore { symbols, edges };
+        let ss = SerializedStore {
+            version: FORMAT_VERSION,
+            facts: self.facts.values().cloned().collect(),
+            edges: self.all_edges(),
+            profiles: self.profiles.clone(),
+            stats: self.stats.clone(),
+        };
         Ok(bincode::serialize(&ss)?)
     }
 
-    /// Deserialize from bytes.
+    /// Deserialize from bytes (no re-resolution needed).
     pub fn deserialize(data: &[u8]) -> anyhow::Result<Self> {
+        let version: u32 = bincode::deserialize(data.get(..4).unwrap_or(&[])).unwrap_or(0);
+        anyhow::ensure!(
+            version == FORMAT_VERSION,
+            "index format v{version} is outdated (need v{FORMAT_VERSION}); rebuild with `adaptive-codegraph index`"
+        );
         let ss: SerializedStore = bincode::deserialize(data)?;
-        let mut store = Self::new();
-        for sym in ss.symbols {
-            store.insert_symbol(sym);
+        let mut store = Self {
+            facts: ss.facts.into_iter().map(|f| (f.file.clone(), f)).collect(),
+            profiles: ss.profiles,
+            stats: ss.stats,
+            ..Default::default()
+        };
+        let syms: Vec<Symbol> = store.facts.values().flat_map(|f| f.symbols.iter().cloned()).collect();
+        for s in syms {
+            store.insert_symbol(s);
         }
-        for edge in ss.edges {
-            store.insert_edge(edge);
+        for e in ss.edges {
+            store.add_edge_raw(e);
         }
         Ok(store)
     }
@@ -195,7 +328,9 @@ impl Store {
     /// Save to a file.
     pub fn save(&self, path: &std::path::Path) -> anyhow::Result<()> {
         let data = self.serialize()?;
-        std::fs::write(path, data)?;
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, data)?;
+        std::fs::rename(&tmp, path)?;
         Ok(())
     }
 
@@ -203,12 +338,6 @@ impl Store {
     pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
         let data = std::fs::read(path)?;
         Self::deserialize(&data)
-    }
-}
-
-impl Default for Store {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -237,6 +366,14 @@ mod tests {
         assert_eq!(store.symbol_count(), 1);
         let got = store.get(&id).unwrap();
         assert_eq!(got.name, "main");
+    }
+
+    #[test]
+    fn duplicate_ids_are_inserted_once() {
+        let mut store = Store::new();
+        store.insert_symbol(make_sym("rust", "function", "main", "src/main.rs"));
+        store.insert_symbol(make_sym("rust", "function", "main", "src/main.rs"));
+        assert_eq!(store.symbol_count(), 1);
     }
 
     #[test]
@@ -283,18 +420,15 @@ mod tests {
         store.insert_symbol(a);
         store.insert_symbol(b);
 
-        let edge = Edge {
-            from: a_id,
-            to: b_id,
-            kind: "calls".into(),
-        };
-        assert!(store.insert_edge(edge));
-        assert_eq!(store.edge_count(), 1);
+        assert!(store.insert_edge(Edge::new(a_id, b_id, "calls")));
+        assert!(store.insert_edge(Edge::new(a_id, b_id, "calls")));
+        assert_eq!(store.edge_count(), 1, "same edge is merged");
 
         let callees = store.callees(&a_id);
         assert_eq!(callees.len(), 1);
         assert_eq!(callees[0].0.name, "callee");
-        assert_eq!(callees[0].1, "calls");
+        assert_eq!(callees[0].1.kind, "calls");
+        assert_eq!(callees[0].1.count, 2);
 
         let callers = store.callers(&b_id);
         assert_eq!(callers.len(), 1);
@@ -308,12 +442,7 @@ mod tests {
         let a_id = a.id;
         store.insert_symbol(a);
         let fake_id = SymbolId::new("rust", "function", "nonexistent", "x.rs");
-        let edge = Edge {
-            from: a_id,
-            to: fake_id,
-            kind: "calls".into(),
-        };
-        assert!(!store.insert_edge(edge));
+        assert!(!store.insert_edge(Edge::new(a_id, fake_id, "calls")));
     }
 
     #[test]
@@ -331,39 +460,51 @@ mod tests {
         assert_eq!(store.find_by_name("c").len(), 1);
     }
 
-    #[test]
-    fn serialize_deserialize_roundtrip() {
-        let mut store = Store::new();
+    fn facts_store() -> (Store, SymbolId, SymbolId) {
         let a = make_sym("rust", "function", "alpha", "lib.rs");
         let b = make_sym("rust", "function", "beta", "lib.rs");
-        let a_id = a.id;
-        let b_id = b.id;
-        store.insert_symbol(a);
-        store.insert_symbol(b);
-        store.insert_edge(Edge {
-            from: a_id,
-            to: b_id,
-            kind: "calls".into(),
-        });
+        let (a_id, b_id) = (a.id, b.id);
+        let mut facts = BTreeMap::new();
+        facts.insert(
+            "lib.rs".to_string(),
+            FileFacts {
+                file: "lib.rs".into(),
+                lang: "rust".into(),
+                symbols: vec![a, b],
+                ..Default::default()
+            },
+        );
+        let mut store = Store::from_facts(facts, HashMap::new());
+        store.insert_edge(Edge::new(a_id, b_id, "calls"));
+        (store, a_id, b_id)
+    }
 
+    #[test]
+    fn serialize_deserialize_roundtrip() {
+        let (store, a_id, _) = facts_store();
         let bytes = store.serialize().unwrap();
         let restored = Store::deserialize(&bytes).unwrap();
         assert_eq!(restored.symbol_count(), 2);
         assert_eq!(restored.edge_count(), 1);
         assert_eq!(restored.get(&a_id).unwrap().name, "alpha");
+        assert_eq!(restored.file_count(), 1);
+    }
+
+    #[test]
+    fn rejects_old_format() {
+        assert!(Store::deserialize(&[1, 0, 0, 0, 9, 9]).is_err());
     }
 
     #[test]
     fn save_load_file() {
-        let mut store = Store::new();
-        store.insert_symbol(make_sym("go", "function", "main", "main.go"));
+        let (store, _, _) = facts_store();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("graph.bin");
         store.save(&path).unwrap();
 
         let loaded = Store::load(&path).unwrap();
-        assert_eq!(loaded.symbol_count(), 1);
-        assert_eq!(loaded.find_by_name("main").len(), 1);
+        assert_eq!(loaded.symbol_count(), 2);
+        assert_eq!(loaded.find_by_name("alpha").len(), 1);
     }
 
     #[test]

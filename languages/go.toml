@@ -2,3 +2,6 @@ id = "go"
 name = "Go"
 extensions = ["go"]
 grammar = "builtin"
+# A Go package is a directory: functions in sibling files are visible
+# without an import.
+module_mode = "directory"

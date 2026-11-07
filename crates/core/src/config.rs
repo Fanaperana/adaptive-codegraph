@@ -27,7 +27,15 @@ pub struct Config {
     /// Where to store the index.
     pub index_dir: PathBuf,
     /// Detected or configured languages.
+    #[serde(default)]
     pub languages: Vec<DetectedLanguage>,
+    /// Skip files larger than this (generated/minified code).
+    #[serde(default = "default_max_file_bytes")]
+    pub max_file_bytes: u64,
+}
+
+fn default_max_file_bytes() -> u64 {
+    1_000_000
 }
 
 /// Well-known language definition (public for CLI listing).
@@ -65,6 +73,7 @@ impl Default for Config {
             ],
             index_dir: PathBuf::from(".adaptive-codegraph"),
             languages: Vec::new(),
+            max_file_bytes: default_max_file_bytes(),
         }
     }
 }

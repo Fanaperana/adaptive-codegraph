@@ -1,0 +1,6 @@
+util/util.go
+
+func Extra() int {
+	Helper()
+	return Checksum("e")
+}

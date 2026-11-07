@@ -1,0 +1,9 @@
+# Held-out fixture: written after the Phase 1 resolver. Needs trait
+# dispatch, calls inside macros, and closure parameter types.
+draw_all -> Circle::new
+draw_all -> Canvas::draw
+total_area -> Circle::area
+Shape::describe -> Shape::area
+Canvas::draw -> Shape::describe
+Canvas::draw -> Canvas::record
+Canvas::default -> Canvas::new

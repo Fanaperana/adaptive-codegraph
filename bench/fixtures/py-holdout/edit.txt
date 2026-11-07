@@ -1,0 +1,5 @@
+app/db.py
+
+
+def reconnect() -> Database:
+    return connect()

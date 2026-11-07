@@ -1,0 +1,5 @@
+src/logger.ts
+
+export function quietLogger(): Logger {
+  return createLogger();
+}

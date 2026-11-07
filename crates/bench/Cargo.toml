@@ -1,0 +1,21 @@
+[package]
+name = "adaptive-codegraph-bench"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "acg-bench"
+path = "src/main.rs"
+
+[features]
+default = []
+fastembed = ["adaptive-codegraph-core/fastembed"]
+
+[dependencies]
+adaptive-codegraph-core = { path = "../core", default-features = false }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tempfile = "3"

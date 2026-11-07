@@ -1,0 +1,345 @@
+{
+  "label": "baseline-repos",
+  "fixtures": [
+    {
+      "name": "go",
+      "accuracy": {
+        "1": {
+          "tp": 14,
+          "fp": 6,
+          "fn_": 3,
+          "precision": 0.7,
+          "recall": 0.8235294117647058,
+          "f1": 0.7567567567567567
+        },
+        "2": {
+          "tp": 14,
+          "fp": 6,
+          "fn_": 3,
+          "precision": 0.7,
+          "recall": 0.8235294117647058,
+          "f1": 0.7567567567567567
+        },
+        "3": {
+          "tp": 14,
+          "fp": 6,
+          "fn_": 3,
+          "precision": 0.7,
+          "recall": 0.8235294117647058,
+          "f1": 0.7567567567567567
+        }
+      },
+      "false_positives": [
+        "Cache::Len -> Cache::Len",
+        "Cache::Save -> Cache::Len",
+        "Store::Len -> Store::Len",
+        "Store::flush -> Store::Len",
+        "run -> Cache::Save",
+        "util::Checksum -> Cache::Len"
+      ],
+      "false_negatives": [
+        "main -> Store::Len",
+        "main -> Store::Save",
+        "run -> Store::Save"
+      ],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 7,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "python",
+      "accuracy": {
+        "1": {
+          "tp": 8,
+          "fp": 9,
+          "fn_": 14,
+          "precision": 0.47058823529411764,
+          "recall": 0.36363636363636365,
+          "f1": 0.41025641025641024
+        },
+        "2": {
+          "tp": 8,
+          "fp": 9,
+          "fn_": 14,
+          "precision": 0.47058823529411764,
+          "recall": 0.36363636363636365,
+          "f1": 0.41025641025641024
+        },
+        "3": {
+          "tp": 8,
+          "fp": 9,
+          "fn_": 14,
+          "precision": 0.47058823529411764,
+          "recall": 0.36363636363636365,
+          "f1": 0.41025641025641024
+        }
+      },
+      "false_positives": [
+        "Cache -> Cache",
+        "Cache -> Cache::evict",
+        "Cache -> Cache::size",
+        "Store -> Store::_flush",
+        "Store -> util::checksum",
+        "run -> Cache::save",
+        "util::helper -> util::join",
+        "[unmapped] main (function) -> cache (variable)",
+        "[unmapped] main (function) -> store (variable)"
+      ],
+      "false_negatives": [
+        "Cache::build -> Cache",
+        "Cache::evict -> Cache",
+        "Cache::evict -> Cache::size",
+        "Cache::save -> Cache::evict",
+        "Store::save -> Store::_flush",
+        "Store::save -> util::checksum",
+        "main -> Cache",
+        "main -> Store",
+        "main -> Store::save",
+        "main -> Store::size",
+        "main -> util::checksum",
+        "main -> util::helper",
+        "run -> Store::save",
+        "run::inner -> util::checksum"
+      ],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 5,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "rust",
+      "accuracy": {
+        "1": {
+          "tp": 9,
+          "fp": 15,
+          "fn_": 16,
+          "precision": 0.375,
+          "recall": 0.36,
+          "f1": 0.3673469387755102
+        },
+        "2": {
+          "tp": 9,
+          "fp": 15,
+          "fn_": 16,
+          "precision": 0.375,
+          "recall": 0.36,
+          "f1": 0.3673469387755102
+        },
+        "3": {
+          "tp": 9,
+          "fp": 15,
+          "fn_": 16,
+          "precision": 0.375,
+          "recall": 0.36,
+          "f1": 0.3673469387755102
+        }
+      },
+      "false_positives": [
+        "main -> Command::Find",
+        "other::helper -> Cache::len",
+        "other::helper -> Cache::new",
+        "process -> Cache::save",
+        "search -> Cache::len",
+        "tests -> Cache::new",
+        "tests -> process",
+        "[unmapped] Cache (impl) -> evict (function)",
+        "[unmapped] Cache (impl) -> len (function)",
+        "[unmapped] Cache (impl) -> new (function)",
+        "[unmapped] Store (impl) -> checksum (function)",
+        "[unmapped] Store (impl) -> flush (function)",
+        "[unmapped] Store (impl) -> len (function)",
+        "[unmapped] Store (impl) -> new (function)",
+        "[unmapped] checksum (function) -> map (field)"
+      ],
+      "false_negatives": [
+        "Cache::evict -> Cache::len",
+        "Cache::evict -> Cache::new",
+        "Cache::save -> Cache::evict",
+        "Store::persist -> Store::len",
+        "Store::save -> Store::flush",
+        "Store::save -> util::checksum",
+        "main -> Store::len",
+        "main -> Store::new",
+        "main -> Store::save",
+        "main -> util::checksum",
+        "main -> util::helper",
+        "process -> Store::save",
+        "tests::test_process -> Store::len",
+        "tests::test_process -> Store::new",
+        "tests::test_process -> process",
+        "tests::test_search -> search"
+      ],
+      "missing_symbols": [
+        "Persist::persist"
+      ],
+      "duplicate_symbols": 1,
+      "incremental_missing_edges": 6,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "typescript",
+      "accuracy": {
+        "1": {
+          "tp": 7,
+          "fp": 6,
+          "fn_": 13,
+          "precision": 0.5384615384615384,
+          "recall": 0.35,
+          "f1": 0.4242424242424242
+        },
+        "2": {
+          "tp": 7,
+          "fp": 6,
+          "fn_": 13,
+          "precision": 0.5384615384615384,
+          "recall": 0.35,
+          "f1": 0.4242424242424242
+        },
+        "3": {
+          "tp": 7,
+          "fp": 6,
+          "fn_": 13,
+          "precision": 0.5384615384615384,
+          "recall": 0.35,
+          "f1": 0.4242424242424242
+        }
+      },
+      "false_positives": [
+        "Cache -> Cache::evict",
+        "Cache -> Cache::size",
+        "Store -> Store::flush",
+        "Store -> util::checksum",
+        "run -> Cache::save",
+        "[unmapped] run (function) -> inner (variable)"
+      ],
+      "false_negatives": [
+        "Cache::build -> Cache",
+        "Cache::evict -> Cache",
+        "Cache::evict -> Cache::size",
+        "Cache::save -> Cache::evict",
+        "Store::save -> Store::flush",
+        "Store::save -> util::checksum",
+        "main -> Store",
+        "main -> Store::save",
+        "main -> Store::size",
+        "main -> util::checksum",
+        "main -> util::helper",
+        "run -> Store::save",
+        "run -> util::checksum"
+      ],
+      "missing_symbols": [],
+      "duplicate_symbols": 3,
+      "incremental_missing_edges": 5,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    }
+  ],
+  "overall": {
+    "1": {
+      "tp": 38,
+      "fp": 36,
+      "fn_": 46,
+      "precision": 0.5135135135135135,
+      "recall": 0.4523809523809524,
+      "f1": 0.48101265822784806
+    },
+    "2": {
+      "tp": 38,
+      "fp": 36,
+      "fn_": 46,
+      "precision": 0.5135135135135135,
+      "recall": 0.4523809523809524,
+      "f1": 0.48101265822784806
+    },
+    "3": {
+      "tp": 38,
+      "fp": 36,
+      "fn_": 46,
+      "precision": 0.5135135135135135,
+      "recall": 0.4523809523809524,
+      "f1": 0.48101265822784806
+    }
+  },
+  "repos": [
+    {
+      "repo": "crates",
+      "index_secs": 0.133562,
+      "files": 20,
+      "symbols": 550,
+      "duplicate_symbol_ids": 21,
+      "call_edges": 693,
+      "call_edges_by_conf": {
+        "3": 693
+      },
+      "duplicate_edges": 262,
+      "calls_into_non_callable": 44,
+      "calls_from_containers": 265,
+      "absolute_paths": true,
+      "graph_bytes": 196515,
+      "avg_neighborhood_bytes": 2888,
+      "query_ms_avg": 0.01715
+    },
+    {
+      "repo": "ast-grep",
+      "index_secs": 0.3995286,
+      "files": 182,
+      "symbols": 5774,
+      "duplicate_symbol_ids": 534,
+      "call_edges": 11414,
+      "call_edges_by_conf": {
+        "3": 11414
+      },
+      "duplicate_edges": 4884,
+      "calls_into_non_callable": 2244,
+      "calls_from_containers": 5423,
+      "absolute_paths": true,
+      "graph_bytes": 2187076,
+      "avg_neighborhood_bytes": 17017,
+      "query_ms_avg": 0.080365
+    },
+    {
+      "repo": "private-rust-app",
+      "index_secs": 1.4333026,
+      "files": 784,
+      "symbols": 28944,
+      "duplicate_symbol_ids": 1676,
+      "call_edges": 131813,
+      "call_edges_by_conf": {
+        "3": 131813
+      },
+      "duplicate_edges": 67459,
+      "calls_into_non_callable": 36882,
+      "calls_from_containers": 38793,
+      "absolute_paths": true,
+      "graph_bytes": 15119393,
+      "avg_neighborhood_bytes": 180938,
+      "query_ms_avg": 1.062525
+    },
+    {
+      "repo": "src",
+      "index_secs": 6.7366978,
+      "files": 6051,
+      "symbols": 320833,
+      "duplicate_symbol_ids": 56838,
+      "call_edges": 383713,
+      "call_edges_by_conf": {
+        "3": 383713
+      },
+      "duplicate_edges": 196578,
+      "calls_into_non_callable": 114453,
+      "calls_from_containers": 0,
+      "absolute_paths": true,
+      "graph_bytes": 142671712,
+      "avg_neighborhood_bytes": 503605,
+      "query_ms_avg": 3.379
+    }
+  ]
+}

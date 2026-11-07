@@ -7,7 +7,7 @@
 pub mod embedded;
 
 use crate::extract::treesitter::{TreeSitterConfig, TreeSitterExtractor};
-use crate::extract::{Extractor, ExtractorRegistry};
+use crate::extract::{Extractor, ExtractorRegistry, LangProfile};
 use std::path::{Path, PathBuf};
 
 /// A language definition loaded from a `.toml` config file.
@@ -22,6 +22,9 @@ pub struct LanguageDef {
     pub edge_query: Option<PathBuf>,
     /// Tree-sitter grammar: "builtin" or path to shared library.
     pub grammar: String,
+    /// Cross-file scoping rules (`module_mode`, `scope`).
+    #[serde(flatten)]
+    pub profile: LangProfile,
 }
 
 /// Directory containing language definition files.
@@ -184,6 +187,7 @@ fn load_language(
         ts_language,
         symbol_query,
         edge_query,
+        profile: def.profile,
     };
 
     Ok((TreeSitterExtractor::new(config)?, extensions))

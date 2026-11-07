@@ -1,4 +1,4 @@
 id = "typescript"
 name = "TypeScript"
-extensions = ["ts", "tsx"]
+extensions = ["ts", "mts", "cts"]
 grammar = "builtin"

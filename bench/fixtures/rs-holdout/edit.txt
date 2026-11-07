@@ -1,0 +1,5 @@
+src/render.rs
+
+pub fn fresh() -> Canvas {
+    Canvas::default()
+}

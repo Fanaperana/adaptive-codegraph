@@ -1,0 +1,6 @@
+id = "tsx"
+name = "TypeScript (JSX)"
+extensions = ["tsx"]
+grammar = "builtin"
+symbol_query = "languages/queries/typescript.scm"
+edge_query = "languages/queries/tsx_edges.scm"

@@ -243,8 +243,8 @@ fn cmd_find(base: &PathBuf, name: &str, limit: usize) -> Result<()> {
             sym.kind,
             sym.lang,
             sym.file,
-            sym.span.start_line,
-            sym.span.end_line,
+            sym.span.start_line + 1,
+            sym.span.end_line + 1,
             sym.id.to_hex()
         );
     }
@@ -260,8 +260,16 @@ fn cmd_callers(base: &PathBuf, name: &str) -> Result<()> {
         println!("No callers found for '{}'.", name);
         return Ok(());
     }
-    for (sym, kind) in &callers {
-        println!("  {} --[{}]--> {}", sym.name, kind, name);
+    for (sym, e) in &callers {
+        println!(
+            "  {} ({}:{}) --[{}]--> {}{}",
+            query::display_name(sym),
+            sym.file,
+            e.line + 1,
+            e.kind,
+            name,
+            if e.confidence < 3 { "  (low confidence)" } else { "" }
+        );
     }
     Ok(())
 }
@@ -275,8 +283,15 @@ fn cmd_callees(base: &PathBuf, name: &str) -> Result<()> {
         println!("No callees found for '{}'.", name);
         return Ok(());
     }
-    for (sym, kind) in &callees {
-        println!("  {} --[{}]--> {}", name, kind, sym.name);
+    for (sym, e) in &callees {
+        println!(
+            "  {} --[{}]--> {} ({}){}",
+            name,
+            e.kind,
+            query::display_name(sym),
+            query::location(sym),
+            if e.confidence < 3 { "  (low confidence)" } else { "" }
+        );
     }
     Ok(())
 }

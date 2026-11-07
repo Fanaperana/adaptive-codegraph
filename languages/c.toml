@@ -2,3 +2,5 @@ id = "c"
 name = "C"
 extensions = ["c", "h"]
 grammar = "builtin"
+# Non-static top-level functions are visible from every file.
+scope = "global"

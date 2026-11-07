@@ -1,0 +1,21 @@
+# caller -> callee  (anchor ids from `@def` markers)
+main -> Store
+main -> Store::save
+main -> Cache::build
+main -> Cache::save
+main -> Store::size
+main -> Cache::size
+main -> util::helper
+main -> other::helper
+main -> util::format
+main -> util::checksum
+main -> run
+run -> Store::save
+run -> util::checksum
+Store::save -> util::checksum
+Store::save -> Store::flush
+Cache::save -> Cache::evict
+Cache::evict -> Cache
+Cache::evict -> Cache::size
+Cache::build -> Cache
+util::helper -> util::checksum

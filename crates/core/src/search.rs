@@ -82,26 +82,16 @@ impl SearchIndex {
     }
 
     /// Index a single symbol.
-    pub fn index_symbol(
-        &self,
-        writer: &IndexWriter,
-        id: &SymbolId,
-        name: &str,
-        fqname: &str,
-        file: &str,
-        signature: Option<&str>,
-        kind: &str,
-        lang: &str,
-    ) {
+    pub fn index_symbol(&self, writer: &IndexWriter, sym: &crate::model::Symbol) {
         let _ = writer.add_document(doc!(
-            self.fields.id => id.to_hex(),
-            self.fields.name => name,
-            self.fields.fqname => fqname,
-            self.fields.file => file,
-            self.fields.file_text => file,
-            self.fields.signature => signature.unwrap_or(""),
-            self.fields.kind => kind,
-            self.fields.lang => lang,
+            self.fields.id => sym.id.to_hex(),
+            self.fields.name => sym.name.as_str(),
+            self.fields.fqname => sym.fqname.as_str(),
+            self.fields.file => sym.file.as_str(),
+            self.fields.file_text => sym.file.as_str(),
+            self.fields.signature => sym.signature.as_deref().unwrap_or(""),
+            self.fields.kind => sym.kind.as_str(),
+            self.fields.lang => sym.lang.as_str(),
         ));
     }
 
@@ -202,17 +192,15 @@ mod tests {
         lang: &str,
         file: &str,
     ) {
-        let id = SymbolId::new(lang, kind, &format!("{}::{}", file, name), file);
-        search.index_symbol(
-            writer,
-            &id,
-            name,
-            &format!("{}::{}", file, name),
-            file,
-            None,
-            kind,
+        let sym = crate::model::Symbol::new(
             lang,
+            kind,
+            name,
+            format!("{}::{}", file, name),
+            file,
+            Default::default(),
         );
+        search.index_symbol(writer, &sym);
     }
 
     #[test]

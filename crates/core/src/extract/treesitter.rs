@@ -1,32 +1,29 @@
 //! # Generic Tree-sitter Extractor
 //!
-//! Extracts symbols and edges from any language that has:
-//! 1. A tree-sitter grammar (compiled as a shared library or built-in)
-//! 2. A `.scm` query file defining symbol and edge patterns
+//! Extracts symbols and raw facts from any language that has a tree-sitter
+//! grammar plus two query files. Capture names understood:
 //!
-//! The query file uses tree-sitter's query language with special capture names:
-//! - `@symbol.name` — the name node of a symbol definition
-//! - `@symbol.def`  — the entire symbol definition node
-//! - `@call.name`   — the name of a called function
-//! - `@import.path` — an import/include path
+//! **Symbol query** (`<lang>.scm`)
+//! - `@symbol.name` — name node of a definition (required)
+//! - `@symbol.def` — the whole definition node (span, signature, docs)
+//! - `@symbol.type` — declared type / return type
+//! - `@symbol.container` — owning type when it is not a syntactic parent
+//!   (e.g. a Go method receiver)
+//! - `(#set! kind "...")` — override the inferred kind
 //!
-//! Example query for Python:
-//! ```scheme
-//! ; Functions
-//! (function_definition name: (identifier) @symbol.name) @symbol.def
-//!
-//! ; Classes
-//! (class_definition name: (identifier) @symbol.name) @symbol.def
-//!
-//! ; Calls
-//! (call function: (identifier) @call.name)
-//!
-//! ; Imports
-//! (import_from_statement module_name: (dotted_name) @import.path)
-//! ```
+//! **Edge query** (`<lang>_edges.scm`)
+//! - `@call.name` — called name; optional `@call.qualifier` (`Type::f`,
+//!   `module::f`) and `@call.receiver` (`obj.f()`);
+//!   `(#set! target "macro")` restricts targets, `(#set! edge "...")` sets the
+//!   edge kind (default `calls`)
+//! - `@import.path` with `@import.name` / `@import.alias` / `@import.default`,
+//!   or `@import.module` (+ optional `@import.alias`) for whole-module imports
+//! - `@binding.name` with `@binding.type` or `@binding.call` — local
+//!   variables/parameters whose type can be inferred
 
-use crate::extract::Extractor;
-use crate::model::{ExtractionResult, Span, Symbol};
+use crate::extract::{Extractor, LangProfile};
+use crate::model::{Binding, ExtractionResult, Import, RawRef, Span, Symbol, SymbolId};
+use std::collections::HashMap;
 use std::path::Path;
 use streaming_iterator::StreamingIterator;
 
@@ -40,8 +37,31 @@ pub struct TreeSitterConfig {
     pub ts_language: tree_sitter::Language,
     /// Query source for symbol extraction.
     pub symbol_query: String,
-    /// Query source for edge extraction (calls, imports).
+    /// Query source for edge extraction (calls, imports, bindings).
     pub edge_query: String,
+    /// Cross-file scoping rules.
+    pub profile: LangProfile,
+}
+
+struct SymCaps {
+    name: Option<u32>,
+    def: Option<u32>,
+    type_: Option<u32>,
+    container: Option<u32>,
+}
+
+struct EdgeCaps {
+    call_name: Option<u32>,
+    call_qualifier: Option<u32>,
+    call_receiver: Option<u32>,
+    import_path: Option<u32>,
+    import_name: Option<u32>,
+    import_alias: Option<u32>,
+    import_module: Option<u32>,
+    import_default: Option<u32>,
+    binding_name: Option<u32>,
+    binding_type: Option<u32>,
+    binding_call: Option<u32>,
 }
 
 /// A generic extractor powered by tree-sitter + query files.
@@ -49,6 +69,8 @@ pub struct TreeSitterExtractor {
     config: TreeSitterConfig,
     symbol_query: tree_sitter::Query,
     edge_query: tree_sitter::Query,
+    sym_caps: SymCaps,
+    edge_caps: EdgeCaps,
 }
 
 impl TreeSitterExtractor {
@@ -58,118 +80,295 @@ impl TreeSitterExtractor {
         let edge_query = tree_sitter::Query::new(&config.ts_language, &config.edge_query)
             .map_err(|e| anyhow::anyhow!("edge query error for {}: {e}", config.lang_id))?;
 
+        let s = |n: &str| symbol_query.capture_index_for_name(n);
+        let sym_caps = SymCaps {
+            name: s("symbol.name"),
+            def: s("symbol.def"),
+            type_: s("symbol.type"),
+            container: s("symbol.container"),
+        };
+        let e = |n: &str| edge_query.capture_index_for_name(n);
+        let edge_caps = EdgeCaps {
+            call_name: e("call.name"),
+            call_qualifier: e("call.qualifier"),
+            call_receiver: e("call.receiver"),
+            import_path: e("import.path"),
+            import_name: e("import.name"),
+            import_alias: e("import.alias"),
+            import_module: e("import.module"),
+            import_default: e("import.default"),
+            binding_name: e("binding.name"),
+            binding_type: e("binding.type"),
+            binding_call: e("binding.call"),
+        };
+
         Ok(Self {
             config,
             symbol_query,
             edge_query,
+            sym_caps,
+            edge_caps,
         })
     }
 
-    /// Run the symbol query and extract Symbol structs.
-    fn extract_symbols(&self, path: &Path, tree: &tree_sitter::Tree, source: &[u8]) -> Vec<Symbol> {
+    /// Run the symbol query and build Symbol structs (without the file symbol).
+    fn extract_symbols(&self, file: &str, tree: &tree_sitter::Tree, src: &[u8]) -> Vec<Symbol> {
+        struct Cand<'t> {
+            name: String,
+            name_node: tree_sitter::Node<'t>,
+            def: tree_sitter::Node<'t>,
+            explicit_kind: Option<String>,
+            type_hint: Option<String>,
+            container: Option<String>,
+        }
+
         let mut cursor = tree_sitter::QueryCursor::new();
-        let mut matches = cursor.matches(&self.symbol_query, tree.root_node(), source);
-
-        let name_idx = self.symbol_query.capture_index_for_name("symbol.name");
-        let def_idx = self.symbol_query.capture_index_for_name("symbol.def");
-
-        let mut symbols = Vec::new();
-        let path_str = path.to_string_lossy().to_string();
+        let mut matches = cursor.matches(&self.symbol_query, tree.root_node(), src);
+        // Keyed by name-node start byte: several patterns can match one symbol.
+        let mut cands: HashMap<usize, Cand> = HashMap::new();
 
         while let Some(m) = matches.next() {
-            let name_node =
-                name_idx.and_then(|idx| m.captures.iter().find(|c| c.index == idx).map(|c| c.node));
-            let def_node =
-                def_idx.and_then(|idx| m.captures.iter().find(|c| c.index == idx).map(|c| c.node));
+            let get = |idx: Option<u32>| {
+                idx.and_then(|i| m.captures.iter().find(|c| c.index == i).map(|c| c.node))
+            };
+            let Some(name_node) = get(self.sym_caps.name) else { continue };
+            let name = text(name_node, src);
+            if name.is_empty() {
+                continue;
+            }
+            let def = get(self.sym_caps.def).unwrap_or(name_node);
+            let explicit_kind = property(&self.symbol_query, m.pattern_index, "kind");
+            let type_hint = get(self.sym_caps.type_)
+                .and_then(|n| normalize_type(&text(n, src)))
+                .or_else(|| arrow_return_type(def, src));
+            let container = get(self.sym_caps.container).map(|n| text(n, src));
 
-            if let Some(name_node) = name_node {
-                let name = name_node.utf8_text(source).unwrap_or("").to_string();
-                if name.is_empty() {
-                    continue;
+            let cand = Cand {
+                name,
+                name_node,
+                def,
+                explicit_kind,
+                type_hint,
+                container,
+            };
+            match cands.get_mut(&name_node.start_byte()) {
+                None => {
+                    cands.insert(name_node.start_byte(), cand);
                 }
-
-                let span_node = def_node.unwrap_or(name_node);
-                let kind = infer_kind(span_node.kind());
-
-                // Build scoped fqname by walking parent nodes
-                let fqname = build_fqname(&path_str, &name, name_node, source);
-
-                let span = Span {
-                    start_byte: span_node.start_byte(),
-                    end_byte: span_node.end_byte(),
-                    start_line: span_node.start_position().row as u32,
-                    end_line: span_node.end_position().row as u32,
-                };
-
-                // Extract multi-line signature (up to closing paren/brace)
-                let signature = def_node.map(|n| extract_signature(n, source));
-
-                // Extract doc comment from preceding sibling nodes
-                let doc = def_node.and_then(|n| extract_doc_comment(n, source));
-
-                let mut sym =
-                    Symbol::new(&self.config.lang_id, &kind, &name, &fqname, &path_str, span);
-                sym.signature = signature;
-                sym.doc = doc;
-                symbols.push(sym);
+                Some(old) => {
+                    let better = (cand.explicit_kind.is_some() && old.explicit_kind.is_none())
+                        || (cand.explicit_kind.is_some() == old.explicit_kind.is_some()
+                            && cand.def.byte_range().len() > old.def.byte_range().len());
+                    let keep_type = old.type_hint.clone();
+                    let keep_container = old.container.clone();
+                    if better {
+                        *old = cand;
+                    }
+                    if old.type_hint.is_none() {
+                        old.type_hint = keep_type;
+                    }
+                    if old.container.is_none() {
+                        old.container = keep_container;
+                    }
+                }
             }
         }
 
-        symbols
-    }
+        let mut cands: Vec<Cand> = cands.into_values().collect();
+        cands.sort_by_key(|c| (c.def.start_byte(), std::cmp::Reverse(c.def.end_byte())));
 
-    /// Run the edge query and collect unresolved edge references.
-    fn extract_edges(
-        &self,
-        tree: &tree_sitter::Tree,
-        source: &[u8],
-        result: &mut ExtractionResult,
-    ) {
-        let mut cursor = tree_sitter::QueryCursor::new();
-        let mut matches = cursor.matches(&self.edge_query, tree.root_node(), source);
-
-        let call_idx = self.edge_query.capture_index_for_name("call.name");
-        let import_idx = self.edge_query.capture_index_for_name("import.path");
-
-        // Build a map of byte-range → symbol ID for edge resolution
-        let sym_ranges: Vec<(std::ops::Range<usize>, crate::model::SymbolId)> = result
-            .symbols
-            .iter()
-            .map(|s| (s.span.start_byte..s.span.end_byte, s.id))
-            .collect();
-
-        while let Some(m) = matches.next() {
-            // Call edges
-            if let Some(idx) = call_idx {
-                for cap in m.captures.iter().filter(|c| c.index == idx) {
-                    let callee_name = cap.node.utf8_text(source).unwrap_or("");
-                    if callee_name.is_empty() {
-                        continue;
-                    }
-
-                    // Find which symbol this call is inside
-                    let call_byte = cap.node.start_byte();
-                    if let Some((_, caller_id)) = sym_ranges
-                        .iter()
-                        .find(|(range, _)| range.contains(&call_byte))
-                    {
-                        result.add_edge(*caller_id, callee_name, "calls");
-                    }
+        let mut seen: HashMap<SymbolId, usize> = HashMap::new();
+        let mut symbols = Vec::with_capacity(cands.len());
+        for c in cands {
+            let (mut chain, scope_cat) = scope_chain(c.def, src);
+            let mut kind = c.explicit_kind.clone().unwrap_or_else(|| kind_for(c.def, src));
+            if let Some(owner) = &c.container {
+                if let Some(owner) = normalize_type(owner) {
+                    chain.push(owner);
+                }
+                if kind == "function" {
+                    kind = "method".into();
+                }
+            } else if scope_cat == Some(ScopeCat::Type) {
+                if kind == "function" {
+                    kind = "method".into();
+                } else if kind == "variable" {
+                    kind = "field".into();
                 }
             }
 
-            // Import edges
-            if let Some(idx) = import_idx {
-                for cap in m.captures.iter().filter(|c| c.index == idx) {
-                    let import_path = cap.node.utf8_text(source).unwrap_or("");
-                    if import_path.is_empty() {
+            let name = if kind == "impl" {
+                normalize_type(&c.name).unwrap_or(c.name.clone())
+            } else {
+                c.name.clone()
+            };
+            let container = if chain.is_empty() {
+                None
+            } else {
+                Some(chain.join("::"))
+            };
+            let mut fqname = match &container {
+                Some(cn) => format!("{file}::{cn}::{name}"),
+                None => format!("{file}::{name}"),
+            };
+            // Disambiguate same-named symbols in one scope (overloads, several
+            // `impl` blocks for one type, ...).
+            let mut id = SymbolId::new(&self.config.lang_id, &kind, &fqname, file);
+            let n = seen.entry(id).or_insert(0);
+            *n += 1;
+            if *n > 1 {
+                fqname = format!("{fqname}#{n}");
+                id = SymbolId::new(&self.config.lang_id, &kind, &fqname, file);
+            }
+
+            let span = Span {
+                start_byte: c.def.start_byte(),
+                end_byte: c.def.end_byte(),
+                start_line: c.def.start_position().row as u32,
+                end_line: c.def.end_position().row as u32,
+            };
+            let mut sym = Symbol::new(&self.config.lang_id, &kind, &name, &fqname, file, span);
+            sym.id = id;
+            sym.signature = Some(extract_signature(c.def, src, &self.config.lang_id));
+            sym.doc = extract_doc(c.def, src);
+            sym.container = container;
+            sym.type_hint = c.type_hint;
+            let _ = c.name_node;
+            symbols.push(sym);
+        }
+        symbols
+    }
+
+    /// Run the edge query: collect raw references, imports and bindings.
+    fn extract_facts(
+        &self,
+        tree: &tree_sitter::Tree,
+        src: &[u8],
+        index: &SpanIndex,
+        result: &mut ExtractionResult,
+    ) {
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(&self.edge_query, tree.root_node(), src);
+        let c = &self.edge_caps;
+        // One reference per name node: when several patterns match the same
+        // call, keep the most specific (with a qualifier or receiver).
+        let mut ref_at: HashMap<usize, usize> = HashMap::new();
+
+        while let Some(m) = matches.next() {
+            let all = |idx: Option<u32>| -> Vec<tree_sitter::Node> {
+                match idx {
+                    Some(i) => m.captures.iter().filter(|c| c.index == i).map(|c| c.node).collect(),
+                    None => Vec::new(),
+                }
+            };
+            let one = |idx: Option<u32>| all(idx).into_iter().next();
+
+            // Calls / references
+            let names = all(c.call_name);
+            if !names.is_empty() {
+                let qualifier = one(c.call_qualifier).map(|n| text(n, src));
+                let receiver = one(c.call_receiver).map(|n| text(n, src));
+                let target_kind = property(&self.edge_query, m.pattern_index, "target");
+                let kind = property(&self.edge_query, m.pattern_index, "edge")
+                    .unwrap_or_else(|| "calls".to_string());
+                for n in names {
+                    let name = text(n, src);
+                    if name.is_empty() {
                         continue;
                     }
-                    // Import edges are file-level, use first symbol or a synthetic one
-                    if let Some(sym) = result.symbols.first() {
-                        result.add_edge(sym.id, import_path, "imports");
+                    let r = RawRef {
+                        from: index.innermost(&result.symbols, n.start_byte()),
+                        name,
+                        kind: kind.clone(),
+                        qualifier: qualifier.clone(),
+                        receiver: receiver.clone(),
+                        target_kind: target_kind.clone(),
+                        line: n.start_position().row as u32,
+                    };
+                    match ref_at.get(&n.start_byte()) {
+                        Some(&i) => {
+                            let old = &result.refs[i];
+                            if old.qualifier.is_none() && old.receiver.is_none() {
+                                result.refs[i] = r;
+                            }
+                        }
+                        None => {
+                            ref_at.insert(n.start_byte(), result.refs.len());
+                            result.refs.push(r);
+                        }
                     }
                 }
+                continue;
+            }
+
+            // Imports
+            let path = one(c.import_path).map(|n| strip_quotes(&text(n, src)));
+            let alias = one(c.import_alias).map(|n| text(n, src));
+            let items = all(c.import_name);
+            let default = one(c.import_default);
+            let module = one(c.import_module);
+            if path.is_some() || module.is_some() {
+                let line = m.captures[0].node.start_position().row as u32;
+                if let Some(module) = module {
+                    let p = strip_quotes(&text(module, src));
+                    let local = alias.clone().unwrap_or_else(|| last_segment(&p).to_string());
+                    result.imports.push(Import {
+                        local,
+                        path: p,
+                        item: None,
+                        line,
+                    });
+                } else if let Some(path) = path {
+                    if let Some(d) = default {
+                        let local = text(d, src);
+                        result.imports.push(Import {
+                            local: local.clone(),
+                            path: path.clone(),
+                            item: Some(local),
+                            line,
+                        });
+                    }
+                    if items.is_empty() && default.is_none() {
+                        // Whole-module import, bound to the alias or last segment.
+                        let local = alias.clone().unwrap_or_else(|| last_segment(&path).to_string());
+                        result.imports.push(Import {
+                            local,
+                            path: path.clone(),
+                            item: None,
+                            line,
+                        });
+                    }
+                    for it in &items {
+                        let item = text(*it, src);
+                        let local = if items.len() == 1 {
+                            alias.clone().unwrap_or_else(|| item.clone())
+                        } else {
+                            item.clone()
+                        };
+                        result.imports.push(Import {
+                            local,
+                            path: path.clone(),
+                            item: Some(item),
+                            line,
+                        });
+                    }
+                }
+                continue;
+            }
+
+            // Bindings
+            if let Some(bn) = one(c.binding_name) {
+                let type_name = one(c.binding_type).map(|n| text(n, src));
+                let call = one(c.binding_call).map(|n| text(n, src));
+                if type_name.is_none() && call.is_none() {
+                    continue;
+                }
+                result.bindings.push(Binding {
+                    scope: index.innermost(&result.symbols, bn.start_byte()),
+                    name: text(bn, src),
+                    type_name,
+                    call,
+                });
             }
         }
     }
@@ -181,11 +380,12 @@ impl Extractor for TreeSitterExtractor {
     }
 
     fn extensions(&self) -> &[&str] {
-        // This is a bit awkward — we need 'static references but have owned strings.
-        // In practice, the extractor lives for the program lifetime so this is fine
-        // via a leaked slice. For a cleaner API, we'd use Cow<'static, str>.
-        // For now, return an empty slice — matching is done via ExtractorRegistry.
+        // Extension matching is done by ExtractorRegistry.
         &[]
+    }
+
+    fn profile(&self) -> LangProfile {
+        self.config.profile.clone()
     }
 
     fn extract(&self, path: &Path, content: &[u8]) -> anyhow::Result<ExtractionResult> {
@@ -196,15 +396,215 @@ impl Extractor for TreeSitterExtractor {
             .parse(content, None)
             .ok_or_else(|| anyhow::anyhow!("tree-sitter parse failed for {}", path.display()))?;
 
+        let file = path.to_string_lossy().replace('\\', "/");
         let mut result = ExtractionResult::new();
-        let symbols = self.extract_symbols(path, &tree, content);
-        for sym in symbols {
-            result.add_symbol(sym);
-        }
-        self.extract_edges(&tree, content, &mut result);
+
+        // The file itself is a symbol: it owns top-level code and imports.
+        let file_name = file.rsplit('/').next().unwrap_or(&file).to_string();
+        let lines = content.iter().filter(|&&b| b == b'\n').count() as u32;
+        let file_sym = Symbol::new(
+            &self.config.lang_id,
+            "file",
+            file_name,
+            file.clone(),
+            file.clone(),
+            Span {
+                start_byte: 0,
+                end_byte: content.len() + 1,
+                start_line: 0,
+                end_line: lines,
+            },
+        );
+        result.symbols.push(file_sym);
+        result.symbols.extend(self.extract_symbols(&file, &tree, content));
+
+        let index = SpanIndex::new(&result.symbols);
+        index.assign_parents(&mut result.symbols);
+        self.extract_facts(&tree, content, &index, &mut result);
 
         Ok(result)
     }
+}
+
+// ── Span index: innermost enclosing symbol lookups ─────────────────────
+
+/// Symbols sorted by start (ties: larger first), for innermost lookups.
+/// Symbol spans are properly nested, so the innermost symbol containing a
+/// position is the containing one with the largest start.
+struct SpanIndex {
+    order: Vec<usize>,
+}
+
+impl SpanIndex {
+    fn new(symbols: &[Symbol]) -> Self {
+        let mut order: Vec<usize> = (0..symbols.len()).collect();
+        order.sort_by_key(|&i| {
+            (
+                symbols[i].span.start_byte,
+                std::cmp::Reverse(symbols[i].span.end_byte),
+            )
+        });
+        Self { order }
+    }
+
+    /// Innermost symbol containing `byte` (falls back to the file symbol,
+    /// which is always `symbols[0]`).
+    fn innermost(&self, symbols: &[Symbol], byte: usize) -> SymbolId {
+        let upper = self
+            .order
+            .partition_point(|&i| symbols[i].span.start_byte <= byte);
+        for &i in self.order[..upper].iter().rev() {
+            if symbols[i].span.contains(byte) {
+                return symbols[i].id;
+            }
+        }
+        symbols[0].id
+    }
+
+    /// Set `parent` of every symbol to its innermost strict container.
+    fn assign_parents(&self, symbols: &mut [Symbol]) {
+        let mut stack: Vec<usize> = Vec::new();
+        let mut parents = vec![None; symbols.len()];
+        for &i in &self.order {
+            let s = &symbols[i].span;
+            while let Some(&top) = stack.last() {
+                let t = &symbols[top].span;
+                if t.start_byte <= s.start_byte && s.end_byte <= t.end_byte {
+                    break;
+                }
+                stack.pop();
+            }
+            parents[i] = stack.last().map(|&p| symbols[p].id);
+            stack.push(i);
+        }
+        for (i, p) in parents.into_iter().enumerate() {
+            symbols[i].parent = p;
+        }
+    }
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────
+
+fn text(node: tree_sitter::Node, src: &[u8]) -> String {
+    node.utf8_text(src).unwrap_or("").to_string()
+}
+
+fn property(q: &tree_sitter::Query, pattern: usize, key: &str) -> Option<String> {
+    q.property_settings(pattern)
+        .iter()
+        .find(|p| &*p.key == key)
+        .and_then(|p| p.value.as_ref().map(|v| v.to_string()))
+}
+
+fn strip_quotes(s: &str) -> String {
+    s.trim().trim_matches(|c| c == '"' || c == '\'' || c == '`' || c == '<' || c == '>').to_string()
+}
+
+/// Last segment of a module path: `crate::util` → `util`, `./a/b` → `b`.
+pub fn last_segment(path: &str) -> &str {
+    path.rsplit(|c| c == ':' || c == '.' || c == '/')
+        .find(|s| !s.is_empty())
+        .unwrap_or(path)
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum ScopeCat {
+    Type,
+    Module,
+    Function,
+}
+
+fn scope_category(kind: &str) -> Option<ScopeCat> {
+    match kind {
+        "class_definition" | "class_declaration" | "abstract_class_declaration" | "class"
+        | "struct_item" | "impl_item" | "trait_item" | "interface_declaration" | "enum_item"
+        | "enum_declaration" | "struct_specifier" | "union_specifier" | "enum_specifier"
+        | "type_spec" | "union_item" => Some(ScopeCat::Type),
+        "mod_item" | "module" | "internal_module" | "namespace_definition" => Some(ScopeCat::Module),
+        "function_definition" | "function_declaration" | "function_item" | "method_definition"
+        | "method_declaration" | "generator_function_declaration" => Some(ScopeCat::Function),
+        _ => None,
+    }
+}
+
+/// Names of enclosing scopes (outermost first) and the category of the
+/// innermost one.
+fn scope_chain(def: tree_sitter::Node, src: &[u8]) -> (Vec<String>, Option<ScopeCat>) {
+    let mut chain = Vec::new();
+    let mut innermost = None;
+    let mut cur = def.parent();
+    while let Some(p) = cur {
+        if let Some(cat) = scope_category(p.kind()) {
+            let name = if p.kind() == "impl_item" {
+                p.child_by_field_name("type").and_then(|n| normalize_type(&text(n, src)))
+            } else {
+                p.child_by_field_name("name").map(|n| text(n, src))
+            };
+            if let Some(name) = name.filter(|n| !n.is_empty()) {
+                chain.push(name);
+                if innermost.is_none() {
+                    innermost = Some(cat);
+                }
+            }
+        }
+        cur = p.parent();
+    }
+    chain.reverse();
+    (chain, innermost)
+}
+
+/// Infer the kind of a definition node, looking through wrappers such as
+/// decorators, `export`, and `const f = () => ...`.
+fn kind_for(def: tree_sitter::Node, _src: &[u8]) -> String {
+    let mut node = def;
+    match node.kind() {
+        "decorated_definition" => {
+            if let Some(d) = node.child_by_field_name("definition") {
+                node = d;
+            }
+        }
+        "export_statement" => {
+            if let Some(d) = node.child_by_field_name("declaration") {
+                node = d;
+            }
+        }
+        _ => {}
+    }
+    if node.kind() == "lexical_declaration" || node.kind() == "variable_declaration" {
+        if let Some(d) = node.named_child(0) {
+            node = d;
+        }
+    }
+    if node.kind() == "variable_declarator" {
+        if let Some(v) = node.child_by_field_name("value") {
+            if matches!(
+                v.kind(),
+                "arrow_function" | "function_expression" | "function" | "generator_function"
+            ) {
+                return "function".into();
+            }
+        }
+    }
+    if node.kind() == "type_spec" {
+        return match node.child_by_field_name("type").map(|t| t.kind()) {
+            Some("struct_type") => "struct".into(),
+            Some("interface_type") => "interface".into(),
+            _ => "type".into(),
+        };
+    }
+    infer_kind(node.kind())
+}
+
+/// For `const f = (x): T => ...`, the return type of the arrow function.
+fn arrow_return_type(def: tree_sitter::Node, src: &[u8]) -> Option<String> {
+    let decl = if def.kind() == "variable_declarator" {
+        def
+    } else {
+        def.named_child(0).filter(|n| n.kind() == "variable_declarator")?
+    };
+    let v = decl.child_by_field_name("value")?;
+    let rt = v.child_by_field_name("return_type")?;
+    normalize_type(&text(rt, src))
 }
 
 /// Infer a kind string from the tree-sitter node type.
@@ -213,11 +613,16 @@ fn infer_kind(node_kind: &str) -> String {
         "function_definition"
         | "function_declaration"
         | "function_item"
+        | "function_signature_item"
         | "method_definition"
         | "method_declaration"
+        | "method_signature"
+        | "method_elem"
         | "generator_function_declaration"
         | "abstract_method_signature" => "function".to_string(),
-        "class_definition" | "class_declaration" => "class".to_string(),
+        "class_definition" | "class_declaration" | "abstract_class_declaration" => {
+            "class".to_string()
+        }
         "struct_item" | "struct_specifier" => "struct".to_string(),
         "enum_item" | "enum_specifier" | "enum_declaration" => "enum".to_string(),
         "enum_variant" | "enumerator" | "enum_assignment" => "enum_variant".to_string(),
@@ -225,83 +630,112 @@ fn infer_kind(node_kind: &str) -> String {
         "interface_declaration" => "interface".to_string(),
         "impl_item" => "impl".to_string(),
         "trait_item" => "trait".to_string(),
-        "module" | "mod_item" => "module".to_string(),
-        "field_declaration" | "public_field_definition" | "field_definition" => "field".to_string(),
+        "module" | "mod_item" | "internal_module" => "module".to_string(),
+        "field_declaration" | "public_field_definition" | "field_definition"
+        | "property_signature" => "field".to_string(),
         "macro_definition" | "preproc_def" | "preproc_function_def" => "macro".to_string(),
         "const_item" | "const_spec" | "const_declaration" => "constant".to_string(),
         "static_item" => "static".to_string(),
-        "union_specifier" => "union".to_string(),
+        "union_specifier" | "union_item" => "union".to_string(),
         "type_spec" | "type_declaration" => "type".to_string(),
         "var_declaration" | "var_spec" => "variable".to_string(),
         "decorated_definition" => "decorated".to_string(),
-        "lexical_declaration" | "variable_declarator" => "variable".to_string(),
-        "assignment" => "variable".to_string(),
+        "lexical_declaration" | "variable_declarator" | "variable_declaration" => {
+            "variable".to_string()
+        }
+        "assignment" | "expression_statement" | "declaration" | "init_declarator" => {
+            "variable".to_string()
+        }
         _ => "definition".to_string(),
     }
 }
 
-/// Walk parent nodes to build a fully qualified name like `file::Class::method`.
-fn build_fqname(path: &str, name: &str, node: tree_sitter::Node, source: &[u8]) -> String {
-    let scope_kinds = [
-        "class_definition",
-        "class_declaration",
-        "struct_item",
-        "struct_specifier",
-        "impl_item",
-        "trait_item",
-        "module",
-        "mod_item",
-        "function_definition",
-        "function_declaration",
-        "function_item",
+/// Reduce a type expression to the bare type name used for member lookup:
+/// `&mut Store` → `Store`, `*store.Store` → `Store`, `Option<Store>` →
+/// `Store`, `Promise<Cache> | null` → `Cache`, `Vec<u8>` → `Vec`.
+pub fn normalize_type(t: &str) -> Option<String> {
+    let mut s = t.trim();
+    s = s.trim_start_matches(':').trim();
+    s = s.trim_start_matches("->").trim();
+    s = s.trim_matches(|c| c == '"' || c == '\'');
+    loop {
+        let before = s;
+        for p in ["&", "*", "mut ", "dyn ", "impl ", "const ", "readonly ", "typeof ", "[]"] {
+            s = s.strip_prefix(p).unwrap_or(s).trim_start();
+        }
+        if s.starts_with('\'') {
+            // lifetime: `'a Store`
+            s = s.split_once(' ').map(|x| x.1).unwrap_or("");
+        }
+        if s == before {
+            break;
+        }
+    }
+    let base_end = s
+        .find(|c: char| matches!(c, '<' | '[' | '(' | '|' | ' ' | ',' | '{' | '?' | '&' | ';' | '='))
+        .unwrap_or(s.len());
+    let base = &s[..base_end];
+    let base = base.rsplit(|c| c == ':' || c == '.').next().unwrap_or(base);
+
+    // Look through common wrappers to the wrapped type.
+    const WRAPPERS: &[&str] = &[
+        "Option", "Optional", "Box", "Rc", "Arc", "RefCell", "Cell", "Mutex", "RwLock", "Promise",
+        "Readonly", "Partial", "Ref", "Weak", "Pin",
     ];
-
-    let mut scope_chain = Vec::new();
-    let mut current = node.parent();
-
-    while let Some(parent) = current {
-        if scope_kinds.contains(&parent.kind()) {
-            // Look for a `name:` child to get the scope name
-            if let Some(name_child) = parent.child_by_field_name("name") {
-                if let Ok(scope_name) = name_child.utf8_text(source) {
-                    if !scope_name.is_empty() {
-                        scope_chain.push(scope_name.to_string());
+    if WRAPPERS.contains(&base) {
+        let rest = &s[base_end..];
+        if rest.starts_with('<') || rest.starts_with('[') {
+            // Contents up to the matching close bracket.
+            let mut depth = 0;
+            let mut end = rest.len();
+            for (i, c) in rest.char_indices() {
+                match c {
+                    '<' | '[' => depth += 1,
+                    '>' | ']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = i;
+                            break;
+                        }
                     }
+                    _ => {}
                 }
             }
+            if let Some(t) = normalize_type(&rest[1..end]) {
+                return Some(t);
+            }
         }
-        current = parent.parent();
     }
 
-    scope_chain.reverse();
-    if scope_chain.is_empty() {
-        format!("{}::{}", path, name)
-    } else {
-        format!("{}::{}::{}", path, scope_chain.join("::"), name)
-    }
+    let valid = !base.is_empty()
+        && base.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+        && !base.chars().next().unwrap().is_ascii_digit();
+    valid.then(|| base.to_string())
 }
 
-/// Extract a multi-line signature (up to the first `{`, `=>`, or `:` at depth 0).
-fn extract_signature(node: tree_sitter::Node, source: &[u8]) -> String {
+/// Extract a one-line signature: the definition text up to its body.
+fn extract_signature(node: tree_sitter::Node, source: &[u8], lang: &str) -> String {
     let text = node.utf8_text(source).unwrap_or("");
-    // Find the opening brace/colon that starts the body
     let mut depth = 0i32;
     let mut end_idx = text.len();
+    let bytes = text.as_bytes();
 
     for (i, ch) in text.char_indices() {
         match ch {
-            '(' | '[' => depth += 1,
+            '(' | '[' | '<' => depth += 1,
             ')' | ']' => depth -= 1,
-            '{' if depth == 0 => {
+            '>' if i > 0 && bytes[i - 1] != b'-' && bytes[i - 1] != b'=' => depth -= 1,
+            '{' if depth <= 0 => {
                 end_idx = i;
                 break;
             }
-            ':' if depth == 0 && i > 0 => {
-                // Python-style: `def foo(x):` — include the colon
-                // But not for Rust's `pub fn foo() -> Type {`
+            '=' if depth <= 0 && bytes.get(i + 1) == Some(&b'>') => {
+                end_idx = i + 2;
+                break;
+            }
+            ':' if depth <= 0 && lang == "python" => {
                 let after = text.get(i + 1..).unwrap_or("");
                 if after.starts_with('\n') || after.starts_with(' ') || after.is_empty() {
-                    // Likely Python-style class/function body start
                     end_idx = i + 1;
                     break;
                 }
@@ -310,41 +744,69 @@ fn extract_signature(node: tree_sitter::Node, source: &[u8]) -> String {
         }
     }
 
-    let sig = text[..end_idx].trim();
-    // Collapse internal whitespace runs
-    sig.split_whitespace().collect::<Vec<_>>().join(" ")
+    let sig: String = text[..end_idx].split_whitespace().collect::<Vec<_>>().join(" ");
+    if sig.len() > 300 {
+        let mut cut = 300;
+        while !sig.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        format!("{}…", &sig[..cut])
+    } else {
+        sig
+    }
 }
 
-/// Extract doc comments from preceding sibling nodes (e.g., /// or /** */).
-fn extract_doc_comment(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+/// Doc comments from preceding comment siblings (skipping attributes /
+/// decorators), or a Python docstring.
+fn extract_doc(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
     let mut lines = Vec::new();
     let mut sibling = node.prev_sibling();
-
     while let Some(sib) = sibling {
         let kind = sib.kind();
         if kind == "comment" || kind == "line_comment" || kind == "block_comment" {
             if let Ok(text) = sib.utf8_text(source) {
                 lines.push(text.to_string());
             }
-            sibling = sib.prev_sibling();
-        } else {
+        } else if !matches!(kind, "attribute_item" | "decorator" | "inner_attribute_item") {
             break;
         }
+        sibling = sib.prev_sibling();
     }
+    lines.reverse();
 
     if lines.is_empty() {
+        // Python docstring: first statement of the body is a string.
+        let def = if node.kind() == "decorated_definition" {
+            node.child_by_field_name("definition").unwrap_or(node)
+        } else {
+            node
+        };
+        if let Some(body) = def.child_by_field_name("body") {
+            if let Some(first) = body.named_child(0) {
+                if first.kind() == "expression_statement" {
+                    if let Some(s) = first.named_child(0).filter(|s| s.kind() == "string") {
+                        let t = s.utf8_text(source).unwrap_or("");
+                        let t = t.trim_matches(|c| c == '"' || c == '\'').trim();
+                        if !t.is_empty() {
+                            return Some(t.to_string());
+                        }
+                    }
+                }
+            }
+        }
         return None;
     }
 
-    lines.reverse();
     let cleaned: Vec<String> = lines
         .iter()
+        .flat_map(|l| l.lines().map(|x| x.to_string()).collect::<Vec<_>>())
         .map(|l| {
             l.trim()
                 .trim_start_matches("///")
                 .trim_start_matches("//!")
                 .trim_start_matches("//")
                 .trim_start_matches("/**")
+                .trim_start_matches("/*")
                 .trim_end_matches("*/")
                 .trim_start_matches('*')
                 .trim_start_matches('#')
@@ -436,6 +898,29 @@ mod tests {
     }
 
     #[test]
+    fn normalize_type_cases() {
+        assert_eq!(normalize_type("&mut Store").as_deref(), Some("Store"));
+        assert_eq!(normalize_type("*store.Store").as_deref(), Some("Store"));
+        assert_eq!(normalize_type("Option<Store>").as_deref(), Some("Store"));
+        assert_eq!(normalize_type(": Promise<Cache> | null").as_deref(), Some("Cache"));
+        assert_eq!(normalize_type("Vec<u8>").as_deref(), Some("Vec"));
+        assert_eq!(normalize_type("crate::a::B").as_deref(), Some("B"));
+        assert_eq!(normalize_type("Optional[Store]").as_deref(), Some("Store"));
+        assert_eq!(normalize_type("'Cache'").as_deref(), Some("Cache"));
+        assert_eq!(normalize_type("&'a str").as_deref(), Some("str"));
+        assert_eq!(normalize_type("-> Self").as_deref(), Some("Self"));
+        assert_eq!(normalize_type("(a, b)"), None);
+    }
+
+    #[test]
+    fn last_segment_cases() {
+        assert_eq!(last_segment("crate::util"), "util");
+        assert_eq!(last_segment("./a/b"), "b");
+        assert_eq!(last_segment(".util"), "util");
+        assert_eq!(last_segment("example.com/app/store"), "store");
+    }
+
+    #[test]
     fn extract_signature_simple() {
         let src = b"fn main() {\n    println!(\"hello\");\n}";
         let mut parser = tree_sitter::Parser::new();
@@ -445,8 +930,21 @@ mod tests {
         let tree = parser.parse(src, None).unwrap();
         let root = tree.root_node();
         let func = root.child(0).unwrap();
-        let sig = extract_signature(func, src);
+        let sig = extract_signature(func, src, "rust");
         assert!(sig.contains("fn main()"));
         assert!(!sig.contains("println"));
+    }
+
+    #[test]
+    fn extract_signature_keeps_generics_and_return_type() {
+        let src = b"pub fn get<T: Clone>(x: Vec<T>) -> Option<T> where T: Copy { None }";
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let func = tree.root_node().child(0).unwrap();
+        let sig = extract_signature(func, src, "rust");
+        assert_eq!(sig, "pub fn get<T: Clone>(x: Vec<T>) -> Option<T> where T: Copy");
     }
 }

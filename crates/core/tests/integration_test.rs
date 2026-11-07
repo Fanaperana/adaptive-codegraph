@@ -40,6 +40,7 @@ fn make_extractor(lang: &str) -> TreeSitterExtractor {
         ts_language,
         symbol_query,
         edge_query,
+        profile: Default::default(),
     };
 
     TreeSitterExtractor::new(config).expect("failed to create extractor")
@@ -66,6 +67,7 @@ fn make_tsx_extractor() -> TreeSitterExtractor {
         ts_language: tree_sitter_typescript::LANGUAGE_TSX.into(),
         symbol_query,
         edge_query,
+        profile: Default::default(),
     };
 
     TreeSitterExtractor::new(config).expect("failed to create tsx extractor")
@@ -176,7 +178,7 @@ fn rust_fields_and_variants() {
 fn rust_has_edges() {
     let r = extract_fixture("rust", "rust/edge_cases.rs");
     assert!(
-        !r.unresolved_edges.is_empty(),
+        !r.refs.is_empty(),
         "Should have unresolved call edges"
     );
 }
@@ -351,7 +353,7 @@ fn javascript_variables() {
 fn javascript_has_edges() {
     let r = extract_fixture("javascript", "javascript/edge_cases.js");
     assert!(
-        !r.unresolved_edges.is_empty(),
+        !r.refs.is_empty(),
         "Should have call/import edges"
     );
 }
@@ -392,17 +394,17 @@ fn go_extracts_symbols() {
 #[test]
 fn go_structs() {
     let r = extract_fixture("go", "go/edge_cases.go");
-    assert!(has_symbol_of_kind(&r, "Base", "type"));
-    assert!(has_symbol_of_kind(&r, "User", "type"));
-    assert!(has_symbol_of_kind(&r, "Config", "type"));
-    assert!(has_symbol_of_kind(&r, "Stack", "type"));
+    assert!(has_symbol_of_kind(&r, "Base", "struct"));
+    assert!(has_symbol_of_kind(&r, "User", "struct"));
+    assert!(has_symbol_of_kind(&r, "Config", "struct"));
+    assert!(has_symbol_of_kind(&r, "Stack", "struct"));
 }
 
 #[test]
 fn go_interfaces() {
     let r = extract_fixture("go", "go/edge_cases.go");
-    assert!(has_symbol_of_kind(&r, "Reader", "type"));
-    assert!(has_symbol_of_kind(&r, "ReadWriter", "type"));
+    assert!(has_symbol_of_kind(&r, "Reader", "interface"));
+    assert!(has_symbol_of_kind(&r, "ReadWriter", "interface"));
 }
 
 #[test]
@@ -495,7 +497,7 @@ fn c_typedefs() {
 fn c_has_edges() {
     let r = extract_fixture("c", "c/edge_cases.c");
     assert!(
-        !r.unresolved_edges.is_empty(),
+        !r.refs.is_empty(),
         "Should have call edges in C"
     );
 }
@@ -590,4 +592,21 @@ fn fqnames_contain_file_path() {
             );
         }
     }
+}
+
+// ─── Language definitions ───────────────────────────────────────────────
+
+/// Every bundled language must load: a query syntax error only logs a
+/// warning at runtime, so catch it here.
+#[test]
+fn all_bundled_languages_load() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
+    std::env::set_var("ADAPTIVE_CODEGRAPH_LANGUAGES", root.join("languages"));
+    let registry = adaptive_codegraph_core::lang::build_registry(root).unwrap();
+    let mut langs = registry.languages();
+    langs.sort();
+    assert_eq!(
+        langs,
+        vec!["c", "go", "javascript", "python", "rust", "tsx", "typescript"]
+    );
 }

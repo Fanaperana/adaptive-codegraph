@@ -1,0 +1,432 @@
+{
+  "label": "baseline",
+  "fixtures": [
+    {
+      "name": "go",
+      "accuracy": {
+        "1": {
+          "tp": 14,
+          "fp": 6,
+          "fn_": 3,
+          "precision": 0.7,
+          "recall": 0.8235294117647058,
+          "f1": 0.7567567567567567
+        },
+        "2": {
+          "tp": 14,
+          "fp": 6,
+          "fn_": 3,
+          "precision": 0.7,
+          "recall": 0.8235294117647058,
+          "f1": 0.7567567567567567
+        },
+        "3": {
+          "tp": 14,
+          "fp": 6,
+          "fn_": 3,
+          "precision": 0.7,
+          "recall": 0.8235294117647058,
+          "f1": 0.7567567567567567
+        }
+      },
+      "false_positives": [
+        "Cache::Len -> Cache::Len",
+        "Cache::Save -> Cache::Len",
+        "Store::Len -> Store::Len",
+        "Store::flush -> Store::Len",
+        "run -> Cache::Save",
+        "util::Checksum -> Cache::Len"
+      ],
+      "false_negatives": [
+        "main -> Store::Len",
+        "main -> Store::Save",
+        "run -> Store::Save"
+      ],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 7,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "py-holdout",
+      "accuracy": {
+        "1": {
+          "tp": 4,
+          "fp": 10,
+          "fn_": 8,
+          "precision": 0.2857142857142857,
+          "recall": 0.3333333333333333,
+          "f1": 0.30769230769230765
+        },
+        "2": {
+          "tp": 4,
+          "fp": 10,
+          "fn_": 8,
+          "precision": 0.2857142857142857,
+          "recall": 0.3333333333333333,
+          "f1": 0.30769230769230765
+        },
+        "3": {
+          "tp": 4,
+          "fp": 10,
+          "fn_": 8,
+          "precision": 0.2857142857142857,
+          "recall": 0.3333333333333333,
+          "f1": 0.30769230769230765
+        }
+      },
+      "false_positives": [
+        "Database -> Database::get",
+        "Repository -> Database::get",
+        "Repository -> Database::put",
+        "Repository -> Repository::validate",
+        "Service -> Repository::save",
+        "Service -> UserRepo",
+        "Service -> UserRepo::by_name",
+        "UserRepo -> Database::get",
+        "UserRepo -> Repository::find",
+        "UserRepo -> UserRepo::validate"
+      ],
+      "false_negatives": [
+        "Repository::find -> Database::get",
+        "Repository::save -> Database::put",
+        "Repository::save -> Repository::validate",
+        "Service::__init__ -> UserRepo",
+        "Service::register -> Repository::save",
+        "Service::register -> UserRepo::by_name",
+        "UserRepo::by_name -> Repository::find",
+        "UserRepo::validate -> Repository::validate"
+      ],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 7,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "python",
+      "accuracy": {
+        "1": {
+          "tp": 10,
+          "fp": 7,
+          "fn_": 12,
+          "precision": 0.5882352941176471,
+          "recall": 0.45454545454545453,
+          "f1": 0.5128205128205129
+        },
+        "2": {
+          "tp": 10,
+          "fp": 7,
+          "fn_": 12,
+          "precision": 0.5882352941176471,
+          "recall": 0.45454545454545453,
+          "f1": 0.5128205128205129
+        },
+        "3": {
+          "tp": 10,
+          "fp": 7,
+          "fn_": 12,
+          "precision": 0.5882352941176471,
+          "recall": 0.45454545454545453,
+          "f1": 0.5128205128205129
+        }
+      },
+      "false_positives": [
+        "Cache -> Cache",
+        "Cache -> Cache::evict",
+        "Cache -> Cache::size",
+        "Store -> Store::_flush",
+        "Store -> util::checksum",
+        "run -> Cache::save",
+        "util::helper -> util::join"
+      ],
+      "false_negatives": [
+        "Cache::build -> Cache",
+        "Cache::evict -> Cache",
+        "Cache::evict -> Cache::size",
+        "Cache::save -> Cache::evict",
+        "Store::save -> Store::_flush",
+        "Store::save -> util::checksum",
+        "main -> Store::save",
+        "main -> Store::size",
+        "main -> util::checksum",
+        "main -> util::helper",
+        "run -> Store::save",
+        "run::inner -> util::checksum"
+      ],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 5,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "rs-holdout",
+      "accuracy": {
+        "1": {
+          "tp": 1,
+          "fp": 6,
+          "fn_": 6,
+          "precision": 0.14285714285714285,
+          "recall": 0.14285714285714285,
+          "f1": 0.14285714285714285
+        },
+        "2": {
+          "tp": 1,
+          "fp": 6,
+          "fn_": 6,
+          "precision": 0.14285714285714285,
+          "recall": 0.14285714285714285,
+          "f1": 0.14285714285714285
+        },
+        "3": {
+          "tp": 1,
+          "fp": 6,
+          "fn_": 6,
+          "precision": 0.14285714285714285,
+          "recall": 0.14285714285714285,
+          "f1": 0.14285714285714285
+        }
+      },
+      "false_positives": [
+        "Shape -> Shape::area",
+        "draw_all -> Canvas::new",
+        "total_area -> Shape::area",
+        "[unmapped] Canvas (impl) -> describe (function)",
+        "[unmapped] Canvas (impl) -> new (function)",
+        "[unmapped] Canvas (impl) -> record (function)"
+      ],
+      "false_negatives": [
+        "Canvas::default -> Canvas::new",
+        "Canvas::draw -> Canvas::record",
+        "Canvas::draw -> Shape::describe",
+        "Shape::describe -> Shape::area",
+        "draw_all -> Circle::new",
+        "total_area -> Circle::area"
+      ],
+      "missing_symbols": [],
+      "duplicate_symbols": 3,
+      "incremental_missing_edges": 6,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "rust",
+      "accuracy": {
+        "1": {
+          "tp": 10,
+          "fp": 17,
+          "fn_": 15,
+          "precision": 0.37037037037037035,
+          "recall": 0.4,
+          "f1": 0.3846153846153846
+        },
+        "2": {
+          "tp": 10,
+          "fp": 17,
+          "fn_": 15,
+          "precision": 0.37037037037037035,
+          "recall": 0.4,
+          "f1": 0.3846153846153846
+        },
+        "3": {
+          "tp": 10,
+          "fp": 17,
+          "fn_": 15,
+          "precision": 0.37037037037037035,
+          "recall": 0.4,
+          "f1": 0.3846153846153846
+        }
+      },
+      "false_positives": [
+        "main -> Command::Find",
+        "other::helper -> Cache::len",
+        "other::helper -> Cache::new",
+        "process -> Cache::save",
+        "search -> Cache::len",
+        "tests -> Cache::len",
+        "tests -> Cache::new",
+        "tests -> process",
+        "tests -> search",
+        "[unmapped] Cache (impl) -> evict (function)",
+        "[unmapped] Cache (impl) -> len (function)",
+        "[unmapped] Cache (impl) -> new (function)",
+        "[unmapped] Store (impl) -> checksum (function)",
+        "[unmapped] Store (impl) -> flush (function)",
+        "[unmapped] Store (impl) -> len (function)",
+        "[unmapped] Store (impl) -> new (function)",
+        "[unmapped] checksum (function) -> map (field)"
+      ],
+      "false_negatives": [
+        "Cache::evict -> Cache::len",
+        "Cache::evict -> Cache::new",
+        "Cache::save -> Cache::evict",
+        "Store::persist -> Store::len",
+        "Store::save -> Store::flush",
+        "Store::save -> util::checksum",
+        "main -> Store::len",
+        "main -> Store::new",
+        "main -> Store::save",
+        "main -> util::helper",
+        "process -> Store::save",
+        "tests::test_process -> Store::len",
+        "tests::test_process -> Store::new",
+        "tests::test_process -> process",
+        "tests::test_search -> search"
+      ],
+      "missing_symbols": [],
+      "duplicate_symbols": 1,
+      "incremental_missing_edges": 7,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "ts-holdout",
+      "accuracy": {
+        "1": {
+          "tp": 3,
+          "fp": 10,
+          "fn_": 9,
+          "precision": 0.23076923076923078,
+          "recall": 0.25,
+          "f1": 0.24000000000000002
+        },
+        "2": {
+          "tp": 3,
+          "fp": 10,
+          "fn_": 9,
+          "precision": 0.23076923076923078,
+          "recall": 0.25,
+          "f1": 0.24000000000000002
+        },
+        "3": {
+          "tp": 3,
+          "fp": 10,
+          "fn_": 9,
+          "precision": 0.23076923076923078,
+          "recall": 0.25,
+          "f1": 0.24000000000000002
+        }
+      },
+      "false_positives": [
+        "App -> AuditLogger",
+        "App -> EventBus",
+        "App -> EventBus::publish",
+        "App -> EventBus::subscribe",
+        "App -> Logger::log",
+        "App -> createLogger",
+        "AuditLogger -> Logger::log",
+        "EventBus -> Listener::handle",
+        "Logger -> Logger::format",
+        "Logger -> Logger::log"
+      ],
+      "false_negatives": [
+        "App::bus -> EventBus",
+        "App::logger -> createLogger",
+        "App::start -> AuditLogger",
+        "App::start -> EventBus::publish",
+        "App::start -> EventBus::subscribe",
+        "App::start -> Logger::log",
+        "AuditLogger::handle -> Logger::log",
+        "EventBus::publish -> Listener::handle",
+        "Logger::log -> Logger::format"
+      ],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 8,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "typescript",
+      "accuracy": {
+        "1": {
+          "tp": 8,
+          "fp": 6,
+          "fn_": 12,
+          "precision": 0.5714285714285714,
+          "recall": 0.4,
+          "f1": 0.47058823529411764
+        },
+        "2": {
+          "tp": 8,
+          "fp": 6,
+          "fn_": 12,
+          "precision": 0.5714285714285714,
+          "recall": 0.4,
+          "f1": 0.47058823529411764
+        },
+        "3": {
+          "tp": 8,
+          "fp": 6,
+          "fn_": 12,
+          "precision": 0.5714285714285714,
+          "recall": 0.4,
+          "f1": 0.47058823529411764
+        }
+      },
+      "false_positives": [
+        "Cache -> Cache",
+        "Cache -> Cache::evict",
+        "Cache -> Cache::size",
+        "Store -> Store::flush",
+        "Store -> util::checksum",
+        "run -> Cache::save"
+      ],
+      "false_negatives": [
+        "Cache::build -> Cache",
+        "Cache::evict -> Cache",
+        "Cache::evict -> Cache::size",
+        "Cache::save -> Cache::evict",
+        "Store::save -> Store::flush",
+        "Store::save -> util::checksum",
+        "main -> Store::save",
+        "main -> Store::size",
+        "main -> util::checksum",
+        "main -> util::helper",
+        "run -> Store::save",
+        "run -> util::checksum"
+      ],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 5,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    }
+  ],
+  "overall": {
+    "1": {
+      "tp": 50,
+      "fp": 62,
+      "fn_": 65,
+      "precision": 0.44642857142857145,
+      "recall": 0.43478260869565216,
+      "f1": 0.44052863436123346
+    },
+    "2": {
+      "tp": 50,
+      "fp": 62,
+      "fn_": 65,
+      "precision": 0.44642857142857145,
+      "recall": 0.43478260869565216,
+      "f1": 0.44052863436123346
+    },
+    "3": {
+      "tp": 50,
+      "fp": 62,
+      "fn_": 65,
+      "precision": 0.44642857142857145,
+      "recall": 0.43478260869565216,
+      "f1": 0.44052863436123346
+    }
+  },
+  "repos": []
+}
