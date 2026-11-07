@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mods/codegraph-status`, both in the repo's marketplace manifest.
   The status line also shows each graph tool call live (tool, target,
   result size, time).
+  Graph tool calls also get a `codegraph` badge on their transcript row, and
+  the mod finds the CLI in `~/.cargo/bin` when the app's PATH lacks it.
 - Safe to run in every project: a cross-process index lock, the index folder
   git-ignores itself, the session-start hook skips non-project folders, and
   `max_files` caps accidental huge indexes. `status` no longer builds an index.

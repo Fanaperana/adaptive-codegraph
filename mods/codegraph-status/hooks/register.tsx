@@ -10,11 +10,49 @@ type Status = { line: string; text: string }
 const count = (n: number) =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`
 
+// The command that last started, and why the last attempt failed.
+let found: string | undefined
+let lastError = ''
+
+/**
+ * Where the CLI may be: on PATH (with and without `.exe`, since no shell
+ * resolves it), then cargo's bin folder, which a GUI app's PATH can miss.
+ */
+async function candidates($: EngineInterface): Promise<string[]> {
+  const list = [CLI, `${CLI}.exe`]
+  const cargo = await $.env.get('CARGO_HOME')
+  const profile = await $.env.get('USERPROFILE')
+  const home = await $.env.get('HOME')
+  for (const dir of [cargo, profile && `${profile}/.cargo`, home && `${home}/.cargo`]) {
+    if (dir) list.push(`${dir}/bin/${CLI}.exe`, `${dir}/bin/${CLI}`)
+  }
+  return [...new Set(list)]
+}
+
+/** Run the CLI with these arguments, trying each place it may be installed. */
+async function runCli($: EngineInterface, args: string[], timeoutMs: number) {
+  const tries = found ? [found, ...(await candidates($)).filter(c => c !== found)] : await candidates($)
+  for (const cmd of tries) {
+    try {
+      const r = await $.process.run([cmd, ...args], { timeoutMs })
+      found = cmd
+      return r
+    } catch (err) {
+      lastError = `${cmd}: ${String(err)}`
+    }
+  }
+  found = undefined
+  throw new Error(lastError)
+}
+
 /** Read the index status (never builds or refreshes the index). */
 async function readStatus($: EngineInterface): Promise<Status | undefined> {
   try {
-    const r = await $.process.run([CLI, 'status'], { timeoutMs: 30_000 })
-    if (r.exitCode !== 0) return undefined
+    const r = await runCli($, ['status'], 30_000)
+    if (r.exitCode !== 0) {
+      lastError = (r.stderr || r.stdout).trim()
+      return { line: '✖ status failed', text: `adaptive-codegraph status failed:\n${lastError}` }
+    }
     if (r.stdout.startsWith('No index')) {
       return { line: '◌ not indexed', text: r.stdout }
     }
@@ -48,12 +86,16 @@ export const register: Register = on => {
   on('command.run', { command: 'codegraph-status' }, async $ => {
     const s = await readStatus($)
     $.ui.status(s ? s.line : MISSING)
-    return { text: s ? s.text : `${CLI} is not on PATH. Run install.sh from the adaptive-codegraph repo.` }
+    return {
+      text: s
+        ? s.text
+        : `Could not start ${CLI} (not on PATH or in ~/.cargo/bin). Run install.sh from the adaptive-codegraph repo.\nLast error: ${lastError}`,
+    }
   })
 
   on('command.run', { command: 'codegraph-reindex' }, async $ => {
     try {
-      const r = await $.process.run([CLI, 'index'], { timeoutMs: 600_000 })
+      const r = await runCli($, ['index'], 600_000)
       const s = await readStatus($)
       $.ui.status(s ? s.line : MISSING)
       return { text: (r.stderr + r.stdout).trim() || 'Re-indexed.' }
@@ -102,6 +144,49 @@ export const register: Register = on => {
       })
     }
   }).catch(($, e, next) => next(e)) // a status bug must never block the tool
+
+  // A badge on each graph tool's row in the transcript, above the engine's
+  // own row: blue when done, yellow while running, red on failure.
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    const own = await next(e)
+    const tool = graphTool(e.props.tool)
+    if (!tool) return own
+
+    const { Box, Text } = $.ui.resolve(e)
+    const { isRunning, isErrored, isInterrupted } = e.props
+    const [color, state] = isErrored || isInterrupted
+      ? ['error', isInterrupted ? 'interrupted' : 'failed']
+      : isRunning
+        ? ['warning', 'running…']
+        : ['suggestion', summary(outputText(e.props.output))]
+    const what = target((e.props.input ?? {}) as Record<string, unknown>)
+
+    return (
+      <Box flexDirection="column">
+        <Box flexDirection="row">
+          <Text backgroundColor={color} color="inverseText" bold>
+            {' ◆ codegraph '}
+          </Text>
+          <Text color={color} bold>{` ${tool}`}</Text>
+          <Text dimColor>{`${what ? ` · ${what}` : ''} · ${state}`}</Text>
+        </Box>
+        {own}
+      </Box>
+    )
+  }).catch(($, e, next) => next(e)) // a badge bug falls back to the plain row
+}
+
+/** The text of an MCP result as stored for the row (a string or content blocks). */
+function outputText(output: unknown): string {
+  if (typeof output === 'string') return output
+  const blocks = Array.isArray(output)
+    ? output
+    : output && typeof output === 'object' && Array.isArray((output as { content?: unknown }).content)
+      ? (output as { content: unknown[] }).content
+      : []
+  return blocks
+    .map(b => (b && typeof b === 'object' && typeof (b as { text?: unknown }).text === 'string' ? (b as { text: string }).text : ''))
+    .join('\n')
 }
 
 /** `explain` for `mcp__plugin_adaptive-codegraph_adaptive-codegraph__explain`. */
