@@ -348,9 +348,9 @@ pub fn update_index(
 }
 
 /// Print a phase timing when `ACG_TIMINGS` is set.
-fn timing(phase: &str, t: std::time::Instant) {
+pub(crate) fn timing(phase: &str, t: std::time::Instant) {
     if std::env::var_os("ACG_TIMINGS").is_some() {
-        eprintln!("[timing] {phase}: {:.2}s", t.elapsed().as_secs_f64());
+        eprintln!("[timing] {phase}: {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
     }
     tracing::debug!("{phase}: {:.2}s", t.elapsed().as_secs_f64());
 }
@@ -476,7 +476,7 @@ pub(crate) fn walk_files(
     base: &Path,
     exclude: &[String],
     max_bytes: u64,
-    keep: &dyn Fn(&Path) -> bool,
+    keep: &(dyn Fn(&Path) -> bool + Sync),
 ) -> anyhow::Result<Vec<DiskFile>> {
     let mut gs = globset::GlobSetBuilder::new();
     for pat in exclude {
@@ -487,55 +487,61 @@ pub(crate) fn walk_files(
     let excludes = gs.build()?;
     let index_dir = base.join(&config.index_dir);
 
-    let mut files = Vec::new();
-    let mut seen = HashSet::new();
+    let found = std::sync::Mutex::new(Vec::new());
     for root in &config.roots {
         let abs_root = if root.as_os_str() == "." {
             base.to_path_buf()
         } else {
             base.join(root)
         };
+        let skip_dir = index_dir.clone();
+        // Parallel walk (as ripgrep does): stat calls dominate on Windows.
         let walker = ignore::WalkBuilder::new(&abs_root)
             .hidden(true)
             .git_ignore(true)
             .require_git(false)
-            .build();
-
-        for entry in walker.flatten() {
-            if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                continue;
-            }
-            let path = entry.path();
-            if path.starts_with(&index_dir) || !keep(path) {
-                continue;
-            }
-            let rel = rel_path(base, path);
-            if excludes.is_match(&rel) || excludes.is_match(format!("/{rel}")) {
-                continue;
-            }
-            let Ok(meta) = entry.metadata() else { continue };
-            if meta.len() > max_bytes {
-                tracing::debug!("skipping large file {rel} ({} bytes)", meta.len());
-                continue;
-            }
-            if !seen.insert(rel.clone()) {
-                continue;
-            }
-            let mtime = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_nanos())
-                .unwrap_or(0);
-            files.push(DiskFile {
-                abs: path.to_path_buf(),
-                rel,
-                mtime,
-                size: meta.len(),
-            });
-        }
+            .filter_entry(move |e| e.path() != skip_dir)
+            .build_parallel();
+        walker.run(|| {
+            let (found, excludes) = (&found, &excludes);
+            Box::new(move |entry| {
+                let Ok(entry) = entry else { return ignore::WalkState::Continue };
+                if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                    return ignore::WalkState::Continue;
+                }
+                let path = entry.path();
+                if !keep(path) {
+                    return ignore::WalkState::Continue;
+                }
+                let rel = rel_path(base, path);
+                if excludes.is_match(&rel) || excludes.is_match(format!("/{rel}")) {
+                    return ignore::WalkState::Continue;
+                }
+                let Ok(meta) = entry.metadata() else { return ignore::WalkState::Continue };
+                if meta.len() > max_bytes {
+                    tracing::debug!("skipping large file {rel} ({} bytes)", meta.len());
+                    return ignore::WalkState::Continue;
+                }
+                let mtime = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                found.lock().unwrap().push(DiskFile {
+                    abs: path.to_path_buf(),
+                    rel,
+                    mtime,
+                    size: meta.len(),
+                });
+                ignore::WalkState::Continue
+            })
+        });
     }
+    let mut files = found.into_inner().unwrap();
     files.sort_by(|a, b| a.rel.cmp(&b.rel));
+    // Overlapping roots can yield a file twice.
+    files.dedup_by(|a, b| a.rel == b.rel);
     Ok(files)
 }
 

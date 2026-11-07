@@ -103,30 +103,44 @@ class Codegraph:
         # id -> file, for the retry an agent makes with a file-qualified name.
         self.home = {sym: f for f, ds in (defs or {}).items() for _, sym in ds}
 
+    last_name = ""
+
     def ask(self, cmd, sym, cwd, at=None):
         """Ask by name, then retry the way an agent would, counting each call:
         an unknown name (fixture ids such as `util::checksum` are
         module-style) as `file::name`; an ambiguous one by the ID of the
         candidate defined at `at` = (file, line)."""
+        self.last_name = sym
         out, t = run([CG, *cmd(sym)], cwd)
         size, calls = len(out.encode()), 1
         if out.startswith("No symbol named") and sym in self.home:
-            out, t2 = run([CG, *cmd(f"{self.home[sym]}::{short(sym)}")], cwd)
+            self.last_name = f"{self.home[sym]}::{short(sym)}"
+            out, t2 = run([CG, *cmd(self.last_name)], cwd)
             size, calls, t = size + len(out.encode()), calls + 1, t + t2
         if " matches " in out.split("\n", 1)[0] and at:
             cands = [(f.replace("\\", "/"), int(l), i)
                      for f, l, i in re.findall(r" - (\S+?):(\d+)\s+\[([0-9a-f]+)", out)]
             same = [c for c in cands if c[0] == at[0]]
             if same:
-                pick = min(same, key=lambda c: abs(c[1] - at[1]))[2]
+                pick = self.last_name = min(same, key=lambda c: abs(c[1] - at[1]))[2]
                 out, t2 = run([CG, *cmd(pick)], cwd)
                 size, calls, t = size + len(out.encode()), calls + 1, t + t2
         return out, size, t, calls
 
     def callers(self, sym, cwd, at=None):
+        """Confirmed callers. Calls the resolver could not link are listed
+        after a "Possible callers" line; they are kept in `self.possible`
+        and scored separately."""
         out, size, t, calls = self.ask(lambda s: ["callers", s], sym, cwd, at)
-        hits = [(f.replace("\\", "/"), int(l)) for f, l in re.findall(r" - (\S+?):(\d+)", out)]
-        return hits, size, t, calls
+        sure = out.split("\n+ ", 1)[0]
+        # The default answer only counts possible callers; list them with a
+        # second call (not counted: scored as a separate row).
+        maybe = ""
+        if re.search(r"^\+ \d+ possible", out, re.M):
+            maybe = run([CG, "callers", "--possible", self.last_name], cwd)[0].partition("Possible callers")[2]
+        find = lambda text: [(f.replace("\\", "/"), int(l)) for f, l in re.findall(r" - (\S+?):(\d+)", text)]
+        self.possible = find(maybe)
+        return find(sure), size, t, calls
 
     def impact(self, sym, cwd):
         out, size, t, calls = self.ask(lambda s: ["impact", s, "--depth", "4"], sym, cwd)
@@ -184,7 +198,7 @@ def ancestors(edges, sym):
 
 
 def bench_fixtures(sg_bin):
-    res = {t: defaultdict(float) for t in ("ripgrep", "ast-grep", "adaptive-codegraph")}
+    res = {t: defaultdict(float) for t in ("ripgrep", "ast-grep", "adaptive-codegraph", "adaptive-codegraph + possible")}
     for d in sorted(FIXTURES.iterdir()):
         if not (d / "expected.txt").exists():
             continue
@@ -200,11 +214,12 @@ def bench_fixtures(sg_bin):
         for tool in text_tools + [Codegraph(defs)]:
             r = res[tool.name]
             # --- callers
-            pred = set()
+            pred, plus = set(), set()
             for c in callees:
                 q = c if tool.name == "adaptive-codegraph" else short(c)
                 hits, size, secs, calls = tool.callers(q, cwd)
                 pred |= {(enclosing(defs, f, l), c) for f, l in hits}
+                plus |= {(enclosing(defs, f, l), c) for f, l in getattr(tool, "possible", [])}
                 r["callers_bytes"] += size
                 r["callers_secs"] += secs
                 r["callers_calls"] += calls
@@ -213,6 +228,13 @@ def bench_fixtures(sg_bin):
             r["callers_tp"] += tp
             r["callers_pred"] += len(pred)
             r["callers_truth"] += len(edges)
+            if tool.name == "adaptive-codegraph":
+                both = pred | plus
+                tp, _, _ = prf(both, edges)
+                rp = res["adaptive-codegraph + possible"]
+                rp["callers_tp"] += tp
+                rp["callers_pred"] += len(both)
+                rp["callers_truth"] += len(edges)
 
             # --- impact (reverse closure, 4 hops)
             for c in callees:
@@ -302,8 +324,11 @@ def main():
         cp = r["callers_tp"] / r["callers_pred"] if r["callers_pred"] else 1
         cr = r["callers_tp"] / r["callers_truth"]
         ip = r["impact_tp"] / r["impact_pred"] if r["impact_pred"] else 1
-        ir = r["impact_tp"] / r["impact_truth"]
+        ir = r["impact_tp"] / r["impact_truth"] if r["impact_truth"] else 0
         r.update(callers_precision=cp, callers_recall=cr, impact_precision=ip, impact_recall=ir)
+        if t.endswith("+ possible"):
+            print(f"{t:20} {cp:6.2f} / {cr:4.2f}  (confirmed + possible callers, listed on request)")
+            continue
         print(f"{t:20} {cp:6.2f} / {cr:4.2f} {r['callers_calls']:6.0f} {r['callers_bytes']/1024:6.1f} | "
               f"{ip:5.2f} / {ir:4.2f} {r['impact_calls']:6.0f} {r['impact_bytes']/1024:6.1f}")
 

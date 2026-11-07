@@ -10,6 +10,8 @@
 //!   case-sensitive and case-insensitive searches.
 //! - The index is refreshed before each search: files whose mtime or size
 //!   changed are read again, so results always match the files on disk.
+//! - Files larger than [`MAX_IN_MEMORY`] are not held in memory: they are
+//!   read from disk and scanned on every search, so no file is skipped.
 
 use crate::config::Config;
 use crate::index::walk_files;
@@ -19,9 +21,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-const VERSION: u32 = 1;
-/// Larger files are skipped (generated bundles, data dumps).
-const MAX_BYTES: u64 = 4_000_000;
+const VERSION: u32 = 2;
+/// Larger files are searched from disk instead of memory.
+pub const MAX_IN_MEMORY: u64 = 4_000_000;
 /// Longest line text kept in a hit.
 const MAX_LINE_CHARS: usize = 240;
 
@@ -32,6 +34,8 @@ struct TextFile {
     size: u64,
     /// Binary files keep no content and are never searched.
     binary: bool,
+    /// Too large to keep in memory: read from disk at search time.
+    large: bool,
     content: String,
     /// Sorted, deduplicated trigrams of the lowercased content.
     tris: Vec<u32>,
@@ -80,6 +84,10 @@ pub struct TextResult {
 pub struct TextIndex {
     files: Vec<TextFile>,
     postings: HashMap<u32, Vec<u32>>,
+    /// Workspace root, for reading large files (set by `refresh`).
+    base: PathBuf,
+    /// 0 means [`MAX_IN_MEMORY`].
+    max_in_memory: u64,
 }
 
 impl TextIndex {
@@ -95,7 +103,7 @@ impl TextIndex {
             .filter(|s| s.version == VERSION);
         let mut t = Self {
             files: saved.map(|s| s.files).unwrap_or_default(),
-            postings: HashMap::new(),
+            ..Default::default()
         };
         t.rebuild_postings();
         t
@@ -113,7 +121,9 @@ impl TextIndex {
         // Excludes the user added to the config still apply.
         let defaults = Config::default().exclude;
         let user: Vec<String> = config.exclude.iter().filter(|e| !defaults.contains(e)).cloned().collect();
-        let disk = walk_files(config, base, &user, MAX_BYTES, &|_| true)?;
+        self.base = base.to_path_buf();
+        let max = if self.max_in_memory == 0 { MAX_IN_MEMORY } else { self.max_in_memory };
+        let disk = walk_files(config, base, &user, u64::MAX, &|_| true)?;
         let mut old: HashMap<String, TextFile> = std::mem::take(&mut self.files)
             .into_iter()
             .map(|f| (f.path.clone(), f))
@@ -135,15 +145,16 @@ impl TextIndex {
             .par_iter()
             .map(|&i| {
                 let d = &disk[i];
-                let bytes = std::fs::read(&d.abs).unwrap_or_default();
+                let large = d.size > max;
+                let bytes = if large { read_head(&d.abs, 8192) } else { std::fs::read(&d.abs).unwrap_or_default() };
                 let binary = bytes.iter().take(8192).any(|&b| b == 0);
-                let (content, tris) = if binary {
+                let (content, tris) = if binary || large {
                     (String::new(), Vec::new())
                 } else {
                     let tris = trigrams(&bytes);
                     (String::from_utf8_lossy(&bytes).into_owned(), tris)
                 };
-                (i, TextFile { path: d.rel.clone(), mtime: d.mtime, size: d.size, binary, content, tris })
+                (i, TextFile { path: d.rel.clone(), mtime: d.mtime, size: d.size, binary, large, content, tris })
             })
             .collect();
         for (i, f) in read {
@@ -204,7 +215,12 @@ impl TextIndex {
             .par_iter()
             .filter_map(|&i| {
                 let f = &self.files[i as usize];
-                let hits = match_lines(&re, &f.path, &f.content);
+                let hits = if f.large {
+                    let bytes = std::fs::read(self.base.join(&f.path)).ok()?;
+                    match_lines(&re, &f.path, &String::from_utf8_lossy(&bytes))
+                } else {
+                    match_lines(&re, &f.path, &f.content)
+                };
                 (!hits.is_empty()).then_some((i, hits))
             })
             .collect();
@@ -216,13 +232,22 @@ impl TextIndex {
         })
     }
 
-    /// Files that contain every trigram of every required literal.
+    /// Files that contain every trigram of every required literal, plus
+    /// large files (not in the trigram index, always scanned).
     fn candidates(&self, lits: &[Vec<u8>], searchable: &[u32]) -> Vec<u32> {
+        let mut out = self.indexed_candidates(lits, searchable);
+        out.extend(searchable.iter().copied().filter(|&i| self.files[i as usize].large));
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    fn indexed_candidates(&self, lits: &[Vec<u8>], searchable: &[u32]) -> Vec<u32> {
         let mut tris: Vec<u32> = lits.iter().flat_map(|l| trigrams(l)).collect();
         tris.sort_unstable();
         tris.dedup();
         if tris.is_empty() {
-            return searchable.to_vec();
+            return searchable.iter().copied().filter(|&i| !self.files[i as usize].large).collect();
         }
         let mut lists: Vec<&Vec<u32>> = Vec::with_capacity(tris.len());
         for t in &tris {
@@ -300,6 +325,19 @@ impl PathFilter {
             return g.is_match(path);
         }
         true
+    }
+}
+
+/// The first `n` bytes of a file (for binary detection of large files).
+fn read_head(path: &Path, n: usize) -> Vec<u8> {
+    use std::io::Read;
+    let mut buf = vec![0u8; n];
+    match std::fs::File::open(path).and_then(|mut f| f.read(&mut buf)) {
+        Ok(k) => {
+            buf.truncate(k);
+            buf
+        }
+        Err(_) => Vec::new(),
     }
 }
 
@@ -445,6 +483,7 @@ mod tests {
                 mtime: 0,
                 size: c.len() as u64,
                 binary: false,
+                large: false,
                 content: c.to_string(),
                 tris: trigrams(c.as_bytes()),
             });
@@ -507,5 +546,24 @@ mod tests {
         // Reloaded from disk, the index gives the same answer.
         let t2 = TextIndex::load(&idx_dir);
         assert_eq!(t2.search(&q).unwrap().hits.len(), 1);
+    }
+
+    #[test]
+    fn large_files_are_searched_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        let big = format!("{}needle here\n", "filler line\n".repeat(50));
+        std::fs::write(base.join("big.txt"), &big).unwrap();
+        std::fs::write(base.join("small.txt"), "needle too\n").unwrap();
+        let idx_dir = base.join(".adaptive-codegraph");
+        let mut t = TextIndex { max_in_memory: 100, ..Default::default() };
+        t.refresh(&Config::default(), base, &idx_dir).unwrap();
+        let r = t.search(&TextQuery { pattern: "needle".into(), ..Default::default() }).unwrap();
+        let files: Vec<&str> = r.hits.iter().map(|h| h.file.as_str()).collect();
+        assert_eq!(files, ["big.txt", "small.txt"]);
+        assert_eq!(r.hits[0].line, 51);
+        // A pattern with no literal still reaches the large file.
+        let r = t.search(&TextQuery { pattern: r"\w{3}dl\w".into(), ..Default::default() }).unwrap();
+        assert_eq!(r.hits.len(), 2);
     }
 }

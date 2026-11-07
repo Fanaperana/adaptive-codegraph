@@ -1,6 +1,6 @@
 {
   "name": "codegraph-status",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "license": "MIT",
   "description": "Shows the adaptive-codegraph index and each graph tool call as a badge in the transcript and in the status line, and adds /codegraph-status and /codegraph-reindex."
 }

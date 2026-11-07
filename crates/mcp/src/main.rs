@@ -181,8 +181,8 @@ fn tools_list() -> Value {
             "Source code of one symbol with line numbers (long bodies are trimmed in the middle). Cheaper than reading the whole file.",
             json!({"symbol": symbol, "max_lines": {"type": "integer", "default": 150}}), &["symbol"], true),
         tool("callers", "Who calls this",
-            "Call sites of a function/method (file:line). Also lists possible callers: calls to the same name the resolver could not link to one target. With depth > 1, transitive callers grouped by distance.",
-            json!({"symbol": symbol, "depth": {"type": "integer", "default": 1}}), &["symbol"], true),
+            "Call sites of a function/method (file:line). Also counts possible callers: calls to the same name the resolver could not link to one target (list them with possible=true). With depth > 1, transitive callers grouped by distance.",
+            json!({"symbol": symbol, "depth": {"type": "integer", "default": 1}, "possible": {"type": "boolean", "default": false, "description": "List possible callers, not only their count"}}), &["symbol"], true),
         tool("callees", "What this calls",
             "Functions/methods called by a symbol, in order, with their locations.",
             json!({"symbol": symbol}), &["symbol"], true),
@@ -261,7 +261,11 @@ fn call_tool(ws: &mut Workspace, name: &str, args: &Value) -> anyhow::Result<Str
         }
         "explain" | "get_symbol" => ws.explain_text(need(args, &sym_keys)?),
         "source" => ws.source_text(need(args, &sym_keys)?, n(args, "max_lines", 150)),
-        "callers" | "find_callers" => ws.callers_text(need(args, &sym_keys)?, n(args, "depth", 1)),
+        "callers" | "find_callers" => ws.callers_text(
+            need(args, &sym_keys)?,
+            n(args, "depth", 1),
+            args.get("possible").and_then(|v| v.as_bool()).unwrap_or(false),
+        ),
         "callees" | "find_callees" => ws.callees_text(need(args, &sym_keys)?),
         "impact" => ws.impact_text(need(args, &sym_keys)?, n(args, "depth", 4)),
         "repo_map" => ws.repo_map_text(n(args, "budget_tokens", 1500), s(args, "path")),

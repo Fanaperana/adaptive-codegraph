@@ -205,10 +205,16 @@ impl Workspace {
         if self.store.is_some() {
             return;
         }
+        let t = Instant::now();
         if let Ok(s) = Store::load(&self.index_dir().join("graph.bin")) {
+            index::timing("load graph", t);
             self.store = Some(s);
+            let t = Instant::now();
             self.search = SearchIndex::open(&self.index_dir()).ok();
+            index::timing("open search index", t);
+            let t = Instant::now();
             self.vectors = VectorIndex::load(&self.index_dir().join("vectors.bin")).ok();
+            index::timing("load vectors", t);
         }
     }
 
@@ -254,7 +260,10 @@ impl Workspace {
                 return Ok(None);
             }
         }
-        if index::is_up_to_date(&self.config, &self.registry, self.store())? {
+        let t = Instant::now();
+        let fresh = index::is_up_to_date(&self.config, &self.registry, self.store())?;
+        index::timing("freshness check", t);
+        if fresh {
             return Ok(None);
         }
         self.refresh(false)
@@ -437,10 +446,12 @@ impl Workspace {
         Ok(CallersResult { target: SymbolRef::of(s), callers, possible })
     }
 
-    pub fn callers_text(&self, name: &str, depth: usize) -> String {
+    /// Callers as text. Possible callers (unlinked calls to the same name)
+    /// are summarised in one line unless `show_possible` is set.
+    pub fn callers_text(&self, name: &str, depth: usize, show_possible: bool) -> String {
         if depth <= 1 {
             return match self.callers_data(name) {
-                Ok(r) => format_callers(&r),
+                Ok(r) => format_callers(&r, show_possible),
                 Err(m) => m,
             };
         }
@@ -460,7 +471,9 @@ impl Workspace {
     /// refreshed first, so results match the files on disk.
     pub fn grep(&mut self, q: &TextQuery) -> anyhow::Result<GrepResult> {
         self.refresh_text()?;
+        let t = Instant::now();
         let r = self.text.as_ref().expect("loaded by refresh_text").search(q)?;
+        index::timing("text search", t);
         let store = self.store.as_ref();
         let matches = r
             .hits
@@ -473,16 +486,53 @@ impl Workspace {
         Ok(GrepResult { matches, files_scanned: r.candidates, files_indexed: r.files })
     }
 
+    /// [`Workspace::grep`] for a cold start (the CLI): loads and refreshes
+    /// the text index on a second thread while the graph loads. Without
+    /// `with_symbols` the graph is not loaded at all (matches carry no symbol).
+    pub fn grep_cold(&mut self, q: &TextQuery, with_symbols: bool) -> anyhow::Result<(Option<String>, GrepResult)> {
+        let (config, base, index_dir) = (self.config.clone(), self.base.clone(), self.index_dir());
+        let text = self.text.take();
+        let (note, text) = std::thread::scope(|s| {
+            let h = s.spawn(move || -> anyhow::Result<TextIndex> {
+                let mut t = text.unwrap_or_else(|| TextIndex::load(&index_dir));
+                t.refresh(&config, &base, &index_dir)?;
+                Ok(t)
+            });
+            let note = if with_symbols { self.ensure_fresh() } else { Ok(None) };
+            (note, h.join().map_err(|_| anyhow::anyhow!("text index thread panicked")))
+        });
+        let text = text??;
+        let note = note?;
+        let r = text.search(q);
+        self.text = Some(text);
+        let r = r?;
+        let store = self.store.as_ref();
+        let matches = r
+            .hits
+            .into_iter()
+            .map(|hit| {
+                let symbol = store.and_then(|s| enclosing(s, &hit.file, hit.line - 1)).map(SymbolRef::of);
+                GrepHit { hit, symbol }
+            })
+            .collect();
+        Ok((note, GrepResult { matches, files_scanned: r.candidates, files_indexed: r.files }))
+    }
+
     /// Read changed files into the text index now (normally done lazily).
     pub fn refresh_text(&mut self) -> anyhow::Result<usize> {
         let index_dir = self.index_dir();
+        let t = Instant::now();
         let text = self.text.get_or_insert_with(|| TextIndex::load(&index_dir));
+        index::timing("load text index", t);
         if let Some(w) = &self.watch {
             if !w.text_dirty.swap(false, Ordering::SeqCst) {
                 return Ok(0);
             }
         }
-        text.refresh(&self.config, &self.base, &index_dir)
+        let t = Instant::now();
+        let n = text.refresh(&self.config, &self.base, &index_dir);
+        index::timing("text freshness check", t);
+        n
     }
 
     pub fn callees_text(&self, name: &str) -> String {
@@ -649,7 +699,7 @@ fn enclosing<'a>(store: &'a Store, file: &str, line: u32) -> Option<&'a Symbol> 
         .min_by_key(|s| s.span.end_line - s.span.start_line)
 }
 
-fn format_callers(r: &CallersResult) -> String {
+fn format_callers(r: &CallersResult, show_possible: bool) -> String {
     let t = &r.target;
     let mut out = String::new();
     if r.callers.is_empty() {
@@ -662,8 +712,10 @@ fn format_callers(r: &CallersResult) -> String {
             let _ = writeln!(out, "  {} - {}:{}{n}{q}", c.caller.name, c.caller.file, c.line);
         }
     }
-    if !r.possible.is_empty() {
-        const SHOW: usize = 8;
+    if !r.possible.is_empty() && !show_possible {
+        let _ = writeln!(out, "+ {} possible (unlinked calls to the name; possible=true lists them)", r.possible.len());
+    } else if !r.possible.is_empty() {
+        const SHOW: usize = 25;
         let _ = writeln!(
             out,
             "Possible callers ({}): calls to `{}` that could not be linked to one target:",
@@ -689,11 +741,12 @@ pub fn format_grep(r: &GrepResult, limit: usize) -> String {
         return out;
     }
     let files: std::collections::BTreeSet<&str> = r.matches.iter().map(|m| m.hit.file.as_str()).collect();
+    let plural = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
     let _ = writeln!(
         out,
-        "{} matching lines in {} files ({} of {} files scanned):",
-        r.matches.len(),
-        files.len(),
+        "{} in {} ({} of {} files scanned):",
+        plural(r.matches.len(), "matching line", "matching lines"),
+        plural(files.len(), "file", "files"),
         r.files_scanned,
         r.files_indexed
     );

@@ -201,7 +201,7 @@ const clip = (s: string, n = 40) => (s.length > n ? `${s.slice(0, n - 1)}…` : 
 function target(args: Record<string, unknown>): string {
   const str = (k: string) => (typeof args[k] === 'string' ? (args[k] as string).trim() : '')
   if (str('from') && str('to')) return clip(`${str('from')} → ${str('to')}`)
-  for (const k of ['symbol', 'query', 'task', 'file', 'path']) {
+  for (const k of ['symbol', 'pattern', 'query', 'task', 'file', 'path']) {
     if (str(k)) return clip(str(k).replace(/\s+/g, ' '))
   }
   return ''

@@ -107,6 +107,9 @@ enum Commands {
         symbol: String,
         #[arg(long, default_value = "1")]
         depth: usize,
+        /// Also list calls to the same name that could not be linked
+        #[arg(long)]
+        possible: bool,
     },
     /// What a symbol calls
     Callees { symbol: String },
@@ -233,13 +236,34 @@ fn main() -> Result<()> {
                 Ok(_) => {
                     let s = ws.store();
                     format!(
-                        "Code graph ready ({} files, {} symbols). Use the adaptive-codegraph tools (search, context, explain, impact, callers, source, repo_map) instead of grep for code structure.\nMost depended-on code:\n{}",
+                        "Code graph ready ({} files, {} symbols). Use the adaptive-codegraph tools instead of grep: search, context, explain, impact, callers, source, repo_map for code structure; text_search for any text (strings, comments, config).\nMost depended-on code:\n{}",
                         s.file_count(),
                         s.symbol_count(),
                         ws.repo_map_text(budget, None)
                     )
                 }
                 Err(e) => format!("adaptive-codegraph: index unavailable ({e})"),
+            }
+        }
+        Commands::Grep { pattern, fixed, ignore_case, word, path, limit, flat, files_with_matches } => {
+            let q = TextQuery { pattern, fixed, ignore_case, word, path };
+            // Flat rows and file lists show no symbols: skip the graph.
+            let (note, r) = ws.grep_cold(&q, json || !(flat || files_with_matches))?;
+            if let Some(note) = note {
+                eprintln!("{note}");
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&r)?);
+                return Ok(());
+            }
+            if files_with_matches {
+                let mut seen = std::collections::BTreeSet::new();
+                r.matches.iter().filter(|m| seen.insert(m.hit.file.clone())).map(|m| format!("{}
+", m.hit.file)).collect()
+            } else if flat {
+                service::format_grep_flat(&r)
+            } else {
+                service::format_grep(&r, limit)
             }
         }
         cmd => {
@@ -253,23 +277,7 @@ fn main() -> Result<()> {
                 Commands::SemanticSearch { query, limit } | Commands::Find { name: query, limit } => {
                     ws.search_text(&query, limit, None, None)?
                 }
-                Commands::Grep { pattern, fixed, ignore_case, word, path, limit, flat, files_with_matches } => {
-                    let q = TextQuery { pattern, fixed, ignore_case, word, path };
-                    let r = ws.grep(&q)?;
-                    if json {
-                        println!("{}", serde_json::to_string_pretty(&r)?);
-                        return Ok(());
-                    }
-                    if files_with_matches {
-                        let mut seen = std::collections::BTreeSet::new();
-                        r.matches.iter().filter(|m| seen.insert(m.hit.file.clone())).map(|m| format!("{}\n", m.hit.file)).collect()
-                    } else if flat {
-                        service::format_grep_flat(&r)
-                    } else {
-                        service::format_grep(&r, limit)
-                    }
-                }
-                Commands::Callers { symbol, depth } if json && depth <= 1 => {
+                Commands::Callers { symbol, depth, .. } if json && depth <= 1 => {
                     let v = match ws.callers_data(&symbol) {
                         Ok(r) => serde_json::to_value(&r)?,
                         Err(m) => serde_json::json!({ "error": m }),
@@ -279,7 +287,7 @@ fn main() -> Result<()> {
                 }
                 Commands::Explain { symbol } => ws.explain_text(&symbol),
                 Commands::Source { symbol, max_lines } => ws.source_text(&symbol, max_lines),
-                Commands::Callers { symbol, depth } => ws.callers_text(&symbol, depth),
+                Commands::Callers { symbol, depth, possible } => ws.callers_text(&symbol, depth, possible),
                 Commands::Callees { symbol } => ws.callees_text(&symbol),
                 Commands::Impact { symbol, depth } => ws.impact_text(&symbol, depth),
                 Commands::Context { task, budget } => ws.context_text(&task, budget)?,

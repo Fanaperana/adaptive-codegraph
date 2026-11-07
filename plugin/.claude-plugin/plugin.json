@@ -1,6 +1,6 @@
 {
   "name": "adaptive-codegraph",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Code graph for Claude: call graph, impact analysis, repo map and code-aware search over your repository, kept fresh as files change.",
   "author": { "name": "Fanaperana" },
   "homepage": "https://github.com/Fanaperana/adaptive-codegraph",

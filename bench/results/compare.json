@@ -2,7 +2,7 @@
   "fixtures": {
     "ripgrep": {
       "callers_bytes": 19828.0,
-      "callers_secs": 3.091465299963602,
+      "callers_secs": 3.1165770999505185,
       "callers_calls": 84.0,
       "callers_lines": 357.0,
       "callers_tp": 110.0,
@@ -12,7 +12,7 @@
       "impact_pred": 444.0,
       "impact_truth": 168.0,
       "impact_bytes": 56919.0,
-      "impact_secs": 15.192548999912106,
+      "impact_secs": 15.255199699793593,
       "impact_calls": 426.0,
       "callers_precision": 0.3536977491961415,
       "callers_recall": 0.9565217391304348,
@@ -21,7 +21,7 @@
     },
     "ast-grep": {
       "callers_bytes": 6131.0,
-      "callers_secs": 22.236036099973717,
+      "callers_secs": 4.297715199922095,
       "callers_calls": 238.0,
       "callers_lines": 147.0,
       "callers_tp": 92.0,
@@ -31,7 +31,7 @@
       "impact_pred": 216.0,
       "impact_truth": 168.0,
       "impact_bytes": 13192.0,
-      "impact_secs": 71.66854569998395,
+      "impact_secs": 13.586540899937972,
       "impact_calls": 801.0,
       "callers_precision": 0.736,
       "callers_recall": 0.8,
@@ -39,8 +39,8 @@
       "impact_recall": 0.8392857142857143
     },
     "adaptive-codegraph": {
-      "callers_bytes": 8251.0,
-      "callers_secs": 18.482882099982817,
+      "callers_bytes": 8659.0,
+      "callers_secs": 2.4374642000329914,
       "callers_calls": 98.0,
       "callers_lines": 113.0,
       "callers_tp": 112.0,
@@ -50,12 +50,23 @@
       "impact_pred": 177.0,
       "impact_truth": 168.0,
       "impact_bytes": 20958.0,
-      "impact_secs": 18.516488499983097,
+      "impact_secs": 2.4560583999118535,
       "impact_calls": 98.0,
       "callers_precision": 0.9911504424778761,
       "callers_recall": 0.9739130434782609,
       "impact_precision": 0.8757062146892656,
       "impact_recall": 0.9226190476190477
+    },
+    "adaptive-codegraph + possible": {
+      "callers_tp": 114.0,
+      "callers_pred": 121.0,
+      "callers_truth": 115.0,
+      "impact_pred": 0.0,
+      "impact_truth": 0.0,
+      "callers_precision": 0.9421487603305785,
+      "callers_recall": 0.991304347826087,
+      "impact_precision": 1,
+      "impact_recall": 0
     }
   },
   "repo": {
@@ -186,24 +197,24 @@
         390
       ]
     ],
-    "index_secs": 14.336821100005182,
+    "index_secs": 14.233016199999838,
     "per_query": {
       "ripgrep": {
         "lines": 24.28,
         "bytes": 2134.64,
-        "secs": 0.047049711997970006,
+        "secs": 0.04695488399884198,
         "calls": 1.0
       },
       "ast-grep": {
         "lines": 7.24,
         "bytes": 661.76,
-        "secs": 0.3674492960021598,
+        "secs": 0.13384947200131136,
         "calls": 3.0
       },
       "adaptive-codegraph": {
         "lines": 1.12,
-        "bytes": 208.28,
-        "secs": 0.2545190120005282,
+        "bytes": 230.2,
+        "secs": 0.06321640799986199,
         "calls": 1.12
       }
     }
