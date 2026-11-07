@@ -24,7 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MCP server rewrite**: 14 name-based tools with plain-text answers,
   server instructions, auto-built and auto-refreshed index, protocol fixes
   (no replies to notifications, `ping`, version negotiation).
-- **Claude Code plugin** in `plugin/` and a marketplace manifest.
+- **Claude Code plugin** in `plugin/` and a status-line mod in
+  `mods/codegraph-status`, both in the repo's marketplace manifest.
+- Safe to run in every project: a cross-process index lock, the index folder
+  git-ignores itself, the session-start hook skips non-project folders, and
+  `max_files` caps accidental huge indexes. `status` no longer builds an index.
 - **TSX** language; Go package and C global scoping via language profiles;
   built-in language definitions used when no `languages/` folder exists.
 - **`acg-bench`**: ground-truth call-graph fixtures (design + held-out),

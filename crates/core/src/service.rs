@@ -73,6 +73,28 @@ impl Workspace {
         self.base.join(&self.config.index_dir)
     }
 
+    /// Load the saved index without building or refreshing anything.
+    /// Returns whether an index is available.
+    pub fn load_existing(&mut self) -> bool {
+        self.load_saved();
+        self.store.is_some()
+    }
+
+    /// Whether `base` looks like a project root (inside a git repository, or
+    /// holding a common project manifest). Used to avoid indexing e.g. a home
+    /// directory just because a session started there.
+    pub fn is_project(&self) -> bool {
+        const MARKERS: &[&str] = &[
+            "Cargo.toml", "package.json", "go.mod", "pyproject.toml", "setup.py",
+            "requirements.txt", "tsconfig.json", "Makefile", "CMakeLists.txt",
+            ".adaptive-codegraph.toml",
+        ];
+        if MARKERS.iter().any(|m| self.base.join(m).exists()) {
+            return true;
+        }
+        self.base.ancestors().any(|d| d.join(".git").exists())
+    }
+
     /// Load the saved index if there is a usable one.
     fn load_saved(&mut self) {
         if self.store.is_some() {
@@ -90,6 +112,13 @@ impl Workspace {
     pub fn ensure_fresh(&mut self) -> anyhow::Result<Option<String>> {
         self.load_saved();
         if self.store.is_none() {
+            // Another process (hook, MCP server, daemon) may be building it.
+            let _lock = index::IndexLock::acquire(&self.index_dir())?;
+            self.load_saved();
+            if self.store.is_some() {
+                self.last_check = Some(Instant::now());
+                return Ok(None);
+            }
             let t = Instant::now();
             let (store, search, vectors, _) =
                 index::update_index(&self.config, &self.registry, &PluginRegistry::new(), None)?;
@@ -120,6 +149,7 @@ impl Workspace {
 
     /// Re-index changed files (or everything with `full`).
     pub fn refresh(&mut self, full: bool) -> anyhow::Result<Option<String>> {
+        let _lock = index::IndexLock::acquire(&self.index_dir())?;
         self.load_saved();
         let prev = if full { None } else { self.store.take() };
         // Drop the open search index before re-indexing writes to it.

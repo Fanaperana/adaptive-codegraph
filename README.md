@@ -2,330 +2,130 @@
 
 # 🧬 adaptive-codegraph
 
-**Language-agnostic code graph indexer, search engine, and MCP server**
+**A code graph that gives AI assistants a real understanding of your codebase.**
+
+Who calls this? What breaks if I change it? Where is the code that does X?<br/>
+Answered from a resolved call graph in one tool call, instead of a dozen greps and file reads.
 
 [![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![MCP](https://img.shields.io/badge/MCP-2024--11--05-blueviolet)](https://modelcontextprotocol.io/)
+[![MCP](https://img.shields.io/badge/MCP-2025--06--18-blueviolet)](https://modelcontextprotocol.io/)
+[![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757)](#-claude-code-plugin)
 [![tree-sitter](https://img.shields.io/badge/tree--sitter-0.25-green)](https://tree-sitter.github.io/)
+[![Call-graph precision](https://img.shields.io/badge/call--graph%20precision-1.00-brightgreen)](bench/RESULTS.md)
+[![Search MRR](https://img.shields.io/badge/search%20MRR-0.32%E2%86%920.78-brightgreen)](bench/RESULTS.md)
 
-*Add a new language by dropping a `.toml` + `.scm` file — no Rust code changes needed.*
-
-[How It Works](#-how-it-works-under-the-hood) · [Why Not grep?](#-why-not-just-grep) · [Quick Start](#-quick-start) · [Adding a Language](#-adding-a-new-language) · [MCP Tools](#%EF%B8%8F-mcp-tools) · [CLI](#-cli-usage) · [Architecture](#%EF%B8%8F-architecture) · [Full Docs](DOCS.md)
+[What it saves](#-what-it-saves-you) · [Quick start](#-quick-start) · [Claude Code plugin](#-claude-code-plugin) · [Tools](#%EF%B8%8F-tools) · [How it works](#-how-it-works) · [Benchmarks](#-benchmarks) · [Add a language](#-adding-a-language)
 
 </div>
 
 ---
 
-## 💡 Why?
+## ✨ What it does
 
-A similar implementation to [mie-codegraph](https://github.com/mieweb/mie-codegraph) that replaces **hardcoded per-language extractors** with **tree-sitter query files**. The result:
+`adaptive-codegraph` parses your repository with [tree-sitter](https://tree-sitter.github.io/), resolves every call, import, and type reference across files, and serves the result to your AI assistant over [MCP](https://modelcontextprotocol.io/), or to you on the command line.
 
-| | mie-codegraph | adaptive-codegraph |
-|---|---|---|
-| Add a language | Write a Rust extractor (~200 LOC) | Drop 2 `.scm` files + 1 `.toml` |
-| Extraction engine | Mixed tree-sitter + regex | Pure tree-sitter queries |
-| Symbol/Edge kinds | Rust enums (recompile to add) | **Strings** (no recompile) |
-| Language detection | Hardcoded | **Auto-detect** from marker files |
-| Plugin edges | Hardcoded patterns | **Regex plugin system** |
-| WebChart-specific | Yes | **Generic** — works on any codebase |
+```text
+> impact normalize_type
 
-## 📊 Status
+Changing normalize_type (crates/core/src/extract/treesitter.rs:727) affects 14 symbols in 4 files (4 tests), up to 3 hops.
+Depth 1:
+  method Resolver::field_type - crates/core/src/resolve.rs:813  [calls normalize_type]
+  method TreeSitterExtractor::extract_symbols - crates/core/src/extract/treesitter.rs:120  [calls normalize_type]
+  function element_type - crates/core/src/extract/treesitter.rs:648  [calls normalize_type]
+Depth 2:
+  method Resolver::type_of - crates/core/src/resolve.rs:720  [calls Resolver::field_type]
+  ...
+Depth 3:
+  function update_index - crates/core/src/index.rs:75  [calls (via Extractor::extract) TreeSitterExtractor::extract]
+Tests to run:
+  crates/core/src/extract/treesitter.rs: normalize_type_cases, element_type_cases
+```
 
-| Component | Status |
-|-----------|--------|
-| Core library (extract, resolve, store, search, embed, insight) | ✅ Complete |
-| Scope- and type-aware call resolution (imports, `self`, inheritance, interfaces) | ✅ Complete |
-| CLI (search, explain, source, callers, impact, context, map, outline, path, dead-code) | ✅ Complete |
-| MCP server (JSON-RPC 2.0 over stdio, 14 tools, auto-refreshing index) | ✅ Complete |
-| Claude Code plugin (`plugin/`: MCP server, session-start map, skill, commands) | ✅ Complete |
-| Built-in grammars (C, JS, Rust, Python, TypeScript, TSX, Go) | ✅ Complete |
-| Hybrid search (BM25 + fastembed vectors) | ✅ Default (opt-out with `--no-default-features`) |
-| Daemon (file-watching incremental reindex) | ✅ Complete |
-| Benchmark (`acg-bench`: ground-truth fixtures, search, impact, scale) | ✅ Complete |
-
-### Measured accuracy
-
-From `acg-bench` (see [bench/RESULTS.md](bench/RESULTS.md)):
-
-| | Before | Now |
-|---|---|---|
-| Call edges, all fixtures (precision / recall) | 0.45 / 0.43 | **1.00 / 0.98** |
-| Call edges, held-out fixtures | ~0.22 / ~0.24 | **1.00 / 0.94** |
-| Impact analysis (static, precision / recall) | — | **1.00 / 0.97** |
-| Search MRR, 24 natural-language queries on ast-grep | 0.32 | **0.56** lexical, **0.78** hybrid |
-| Neighborhood answer size on vscode (avg) | 500 KB | **~9 KB** |
-
-## � How It Works Under the Hood
-
-adaptive-codegraph builds a **structural understanding** of your codebase, not just a text index. Here's what happens when you run `adaptive-codegraph index`:
-
-### 1. Parse — Tree-sitter turns source code into syntax trees
-
-Every source file is parsed with [tree-sitter](https://tree-sitter.github.io/), producing a concrete syntax tree (CST). This is a full structural parse — it knows the difference between a function *definition*, a function *call*, a *variable*, and a *string literal*.
-
-### 2. Extract — Query files pull out symbols and relationships
-
-Tree-sitter S-expression queries (`.scm` files) are run against the syntax tree to extract:
-
-- **Symbols** — function definitions, classes, structs, enums, modules, traits, interfaces, etc.
-- **Edges** — function calls, imports, inheritance, trait implementations, etc.
-
-Each symbol gets a **stable ID** computed via BLAKE3 hashing of its language, kind, fully-qualified name, and file path. This ID survives edits that don't rename or move the symbol.
-
-### 3. Build — A directed graph of your entire codebase
-
-All symbols become **nodes** and all relationships become **directed edges** in a [petgraph](https://docs.rs/petgraph) graph, with side-table indexes for O(1) lookup by ID, file path, and name. This gives you:
-
-- **"Who calls this function?"** → walk incoming edges
-- **"What does this function call?"** → walk outgoing edges
-- **"Show me everything connected to this symbol within 3 hops"** → BFS traversal
-
-### 4. Index — Full-text search with BM25 ranking
-
-Every symbol is indexed into a [Tantivy](https://github.com/quickwit-oss/tantivy) search engine across multiple fields (name, fully-qualified name, file path, signature). Queries are ranked using BM25 — the same algorithm used by Elasticsearch and Lucene — so a function *named* `parse_config` ranks higher than one that merely *contains* those words in a long path.
-
-### 5. Embed — Optional vector search for semantic matching
-
-Symbol names are embedded into vector space for similarity search:
-
-- **Default:** BLAKE3 hash-based embeddings (32-dim, fast, deterministic)
-- **With `fastembed`:** BGE-small-en-v1.5 transformer (384-dim, semantic understanding)
-
-With transformer embeddings, a search for `"authenticate user"` can match `login`, `verify_credentials`, and `check_password` even though the words don't overlap.
-
-### 6. Persist — Everything is saved for instant reloads
-
-The graph, search index, and vectors are serialized to `.adaptive-codegraph/` in the project root. Subsequent runs load the index in milliseconds. **Incremental reindexing** uses `git diff` to detect changed files and only re-processes those.
+- 🎯 **Accurate call graph.** Calls are resolved through scopes, imports, `self`/`this`, variable and field types, inheritance and interfaces, not by matching names. Every edge carries a confidence level, and ambiguous calls are left out rather than guessed.
+- 💥 **Impact analysis.** See what depends on a function or type, including callers that reach it through an interface, and which tests to run.
+- 🔎 **Search by meaning.** "parse the nth-child argument" finds `parse_nth_child_argument`. Hybrid lexical + embedding ranking.
+- 📦 **Context in one call.** Describe a task and get the relevant source plus related signatures, packed to a token budget.
+- 🗺️ **Repo map.** A PageRank-ranked overview of the code everything else depends on.
+- ♻️ **Always fresh.** Changed files are re-indexed automatically before each answer. Incremental results are identical to a full rebuild.
+- 🌐 **Language-agnostic.** Rust, Python, TypeScript/TSX, JavaScript/JSX, Go and C built in. Add a language with one `.toml` and two `.scm` files, no Rust code.
 
 ---
 
-## 🆚 Why Not Just `grep`?
+## 💰 What it saves you
 
-`grep` searches text. adaptive-codegraph understands **code structure**.
+Measured with the included benchmark ([`bench/RESULTS.md`](bench/RESULTS.md)) on real repositories.
 
-| | `grep` / `ripgrep` | adaptive-codegraph |
+| Task | Without a code graph | With adaptive-codegraph |
 |---|---|---|
-| **What it searches** | Raw text / regex patterns | Parsed symbols, relationships, graph structure |
-| **"Find the function `parse`"** | Matches every string containing "parse" — comments, variables, imports, documentation | Returns only the **function definition** named `parse` |
-| **"Who calls `handle_request`?"** | `grep handle_request` → hundreds of hits, including the definition itself, string literals, comments | `callers "handle_request"` → only the **actual call sites**, with the calling function name and file |
-| **"What does `main` depend on?"** | Not possible with grep | `callees "main"` → every function called by `main`, then `neighborhood "main" --depth 3` for the full dependency subgraph |
-| **Ranking** | No ranking — results are in file order | **BM25 relevance scoring** — best matches first |
-| **Semantic search** | Not possible | `"process authentication"` matches `login()`, `verify_token()` (with fastembed) |
-| **Understands language syntax** | No — treats code as plain text | Yes — knows that `def parse():` is a definition and `parse()` is a call |
-| **Cross-file relationships** | Manual — you grep, read the result, then grep again | Built-in — the graph connects symbols across all files automatically |
-| **Speed on repeated queries** | Re-scans files every time | Index once, query in milliseconds |
+| **"Who calls X?"** (24 functions in [ast-grep](https://github.com/ast-grep/ast-grep)) | `grep -w X`: **11.8 lines** of mixed definitions, imports, comments and same-named symbols, which you then read and filter | `callers X`: **3.5 exact call sites** with the calling function and `file:line`, in **2.7× less text** |
+| **"Where's the code that does X?"** (24 natural-language questions) | No direct way: guess keywords, grep, open files | Correct function **#1 for 71%** and **top-5 for 88%** of questions (MRR **0.78**, vs 0.32 for name-only search) |
+| **"Show me what I need to work on X"** | Find the file, then read all of it (avg **10 KB**, ~2,500 tokens), then chase callers | `context`: the target's source is in a **~1,200-token** bundle for **88%** of questions, plus its callers/callees' signatures |
+| **"What breaks if I change X?"** | Repeated greps by hand, missing indirect and interface callers | `impact`: transitive dependents and tests in one call. **Precision 1.00, recall 0.97** against ground truth |
+| **Exploring around a symbol** (vscode, 6.3k files) | – | Neighborhood answers average **9 KB** (the old version returned **500 KB**) |
 
-### When grep is still the right tool
-
-- Searching for **arbitrary text** (log messages, string literals, comments)
-- One-off searches where you don't need an index
-- Searching non-code files (docs, configs, data files)
-
-### When adaptive-codegraph is better
-
-- Understanding **code structure** — what calls what, what depends on what
-- Navigating **large codebases** where grep returns too many irrelevant results
-- Powering **AI assistants** (via MCP) that need structural context, not just text matches
-- Finding **all callers** of a function across the entire project
-- Exploring the **dependency graph** around a symbol
-- **Semantic search** — finding code by meaning, not exact text
+**Why this matters for an AI assistant:** fewer tool calls, fewer tokens spent reading files that don't matter, and no confidently wrong answers built on a bad call graph. Edits come with the full list of callers to update and tests to run.
 
 ---
 
-> 📖 **[Full documentation →](DOCS.md)** — CLI reference, MCP tool schemas, config options, data model, plugin system, and more.
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- **Rust 1.75+** (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
-
-### Install
+## 🚀 Quick start
 
 ```bash
 git clone https://github.com/Fanaperana/adaptive-codegraph.git
 cd adaptive-codegraph
-./install.sh
+./install.sh                      # builds and puts the binaries on your PATH
+# ./install.sh --no-default-features   # smaller build, lexical search only (no embedding model)
 ```
 
-### Use in Any Project
+Then, in any project:
 
 ```bash
-cd /path/to/your/project
-
-# One-time setup: creates .adaptive-codegraph/ with languages, MCP config, and .gitignore entry
-adaptive-codegraph init
-
-# Build the index
-adaptive-codegraph index
-
-# Search
-adaptive-codegraph search "handle_request"
+adaptive-codegraph search "load the configuration file"
+adaptive-codegraph explain Store::save
+adaptive-codegraph impact Store::save
 ```
 
-Everything lives inside `.adaptive-codegraph/` — just add it to `.gitignore` (done automatically by `init`).
-
-### Add a Custom Language
-
-```bash
-adaptive-codegraph add-language my_lang.toml --symbol-query my_lang.scm --edge-query my_lang_edges.scm
-```
-
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     adaptive-codegraph                       │
-├─────────┬─────────┬───────────┬────────────────────────────┤
-│   CLI   │   MCP   │  Daemon   │  (future: LSP, web UI)     │
-├─────────┴─────────┴───────────┴────────────────────────────┤
-│                        Core Library                         │
-│  ┌──────────┐ ┌──────────┐ ┌────────────┐ ┌────────────┐  │
-│  │ Extract  │ │  Store   │ │   Search   │ │   Embed    │  │
-│  │ (TS+SCM) │ │ (Graph)  │ │  (Tantivy) │ │(HNSW/Hash) │  │
-│  └──────────┘ └──────────┘ └────────────┘ └────────────┘  │
-│  ┌──────────┐ ┌──────────┐ ┌────────────┐ ┌────────────┐  │
-│  │  Config  │ │  Index   │ │Incremental │ │   Query    │  │
-│  │(auto-det)│ │(pipeline)│ │ (git-aware)│ │  (BFS etc) │  │
-│  └──────────┘ └──────────┘ └────────────┘ └────────────┘  │
-├─────────────────────────────────────────────────────────────┤
-│                    Language Definitions                      │
-│  languages/*.toml + languages/queries/*.scm                 │
-│  (C, JavaScript, Rust, Python, TypeScript, Go, ...)         │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Key Design Decisions
-
-| Decision | Rationale |
-|----------|-----------|
-| **String-based SymbolKind/EdgeKind** | No enum changes when adding a language |
-| **Tree-sitter `.scm` queries** | Add a language by writing query files, not Rust code |
-| **Auto-detect languages** | Scan marker files + extensions to know what to index |
-| **BLAKE3 symbol IDs** | Stable, deterministic, content-addressable hashing |
-| **Tantivy BM25** | Full-text search over names, fqnames, signatures, paths |
-| **HNSW vectors** | Semantic search with fastembed (optional) or hash fallback |
-| **Plugin system** | Custom edge patterns via regex (Django routes, etc.) |
-| **Git-aware incremental** | Only re-extract changed files since last indexed HEAD |
+No setup step is needed. The index is built on first use (stored in `.adaptive-codegraph/`, which is git-ignored automatically) and kept up to date as files change.
 
 ---
 
-## 🌐 Adding a New Language
+## 🤖 Claude Code plugin
 
-Three files. Zero Rust changes.
+The plugin wires everything into [Claude Code](https://claude.com/claude-code), for every project:
 
-### 1. Language definition — `languages/<lang>.toml`
-
-```toml
-id = "ruby"
-name = "Ruby"
-extensions = ["rb"]
-grammar = "builtin"
-```
-
-### 2. Symbol extraction — `languages/queries/<lang>.scm`
-
-```scheme
-;; Methods
-(method name: (identifier) @symbol.name) @symbol.def
-
-;; Classes
-(class name: (constant) @symbol.name) @symbol.def
-```
-
-### 3. Edge extraction — `languages/queries/<lang>_edges.scm`
-
-```scheme
-;; Function calls
-(call method: (identifier) @call.name)
-
-;; Imports
-(call method: (identifier) @import.path
-  (#eq? @import.path "require"))
-```
-
-### Built-in Languages
-
-| Language | Grammar | Extensions |
-|----------|---------|------------|
-| 🇨 C | tree-sitter-c | `.c`, `.h` |
-| 📜 JavaScript | tree-sitter-javascript | `.js`, `.jsx`, `.mjs` |
-| 🦀 Rust | tree-sitter-rust | `.rs` |
-| 🐍 Python | tree-sitter-python | `.py` |
-| 🔷 TypeScript | tree-sitter-typescript | `.ts`, `.tsx` |
-| 🐹 Go | tree-sitter-go | `.go` |
-
----
-
-## 🔌 Custom Edge Patterns (Plugins)
-
-For domain-specific edges that tree-sitter queries can't capture (framework routing, layout rendering, etc.):
-
-```rust
-use adaptive_codegraph_core::extract::plugin::RegexEdgePattern;
-
-let pattern = RegexEdgePattern {
-    name: "django_url".to_string(),
-    pattern: regex_lite::Regex::new(r#"path\("([^"]+)",\s*(\w+)"#).unwrap(),
-    edge_kind: "endpoint".to_string(),
-    from_group: 2,
-    to_group: 1,
-};
-```
-
----
-
-## 🛠️ MCP Tools
-
-The MCP server exposes these tools over JSON-RPC 2.0 (stdio). Every tool
-answers in compact text, accepts symbols by name (`save`, `Store::save`,
-`Store.save`, `src/store.rs::Store::save`) or ID, and works on a fresh index:
-the index is built on first use and changed files are re-indexed before
-answering.
-
-| Tool | What it answers |
-|------|-----------------|
-| `search` | Find symbols by name or description (hybrid lexical + semantic ranking) |
-| `context` | The most relevant code for a task, in one budgeted bundle |
-| `explain` | Everything about a symbol: signature, doc, members, callers, callees, supertypes, implementations |
-| `source` | A symbol's source with line numbers |
-| `callers` / `callees` | Call sites (transitive with `depth`) / what a symbol calls |
-| `impact` | What may break if a symbol changes, and which tests to run |
-| `repo_map` | PageRank-ranked overview of the most depended-on code |
-| `outline` | All symbols of a file, nested |
-| `call_path` | Shortest dependency chain from one symbol to another |
-| `dead_code` | Functions/methods nothing uses |
-| `neighborhood` | Symbols and edges within N hops |
-| `reindex` / `index_status` | Force a re-index / index health and resolution stats |
-
-The original tool names (`find_symbol`, `get_symbol`, `find_callers`,
-`find_callees`, `expand_neighborhood`, `semantic_search`, `index`,
-`incremental_index`) are still accepted.
-
-### Claude Code plugin
-
-`plugin/` packages everything for Claude Code: the MCP server, a session-start
-hook that injects a short repo map, a skill that tells Claude when to use the
-graph instead of grep, and `/impact`, `/codemap`, `/explain` commands.
+- the **MCP server** with all the tools below
+- a **session-start hook** that refreshes the index and gives Claude a short map of the most important code
+- a **skill** that teaches Claude when to use the graph instead of grep
+- **commands**: `/impact <symbol>`, `/codemap [path]`, `/explain <symbol>`
+- an optional **status-line mod** (`codegraph-status`) showing index health, with `/codegraph-status` and `/codegraph-reindex`
 
 ```bash
-./install.sh                     # puts adaptive-codegraph{,-mcp,-daemon} on PATH
+./install.sh   # the plugin calls the installed binaries
 ```
 
-Then in Claude Code:
-
-```
+```text
 /plugin marketplace add Fanaperana/adaptive-codegraph
 /plugin install adaptive-codegraph@adaptive-codegraph
+/plugin install codegraph-status@adaptive-codegraph     # optional status line
 ```
 
-### VS Code / Copilot Configuration
+The session-start hook stays silent outside projects (e.g. a session started in your home folder) and refuses to index more than `max_files` source files. Set `ACG_DISABLE=1` to turn it off.
 
-Add a `.vscode/mcp.json` to your project:
+<details>
+<summary><b>Other MCP clients</b> (Claude Desktop, VS Code, Cursor, …)</summary>
+
+```json
+{
+  "mcpServers": {
+    "adaptive-codegraph": {
+      "command": "adaptive-codegraph-mcp",
+      "args": ["--base", "/path/to/your/project"]
+    }
+  }
+}
+```
+
+VS Code (`.vscode/mcp.json`):
 
 ```json
 {
@@ -339,145 +139,200 @@ Add a `.vscode/mcp.json` to your project:
 }
 ```
 
+</details>
+
 ---
 
-## 💻 CLI Usage
+## 🛠️ Tools
 
-```bash
-# cd into any project, then:
+Every tool answers in compact plain text sized for a model's context window, takes symbols by name (`save`, `Store::save`, `Store.save`, `src/store.rs::Store::save`) or ID, and lists the candidates when a name is ambiguous.
 
-# Full index (any command builds/refreshes the index on demand)
-adaptive-codegraph index
+| MCP tool | CLI | What it answers |
+|---|---|---|
+| `search` | `search <query>` | Symbols by name or description (hybrid lexical + semantic) |
+| `context` | `context <task>` | The most relevant code for a task, packed to a token budget |
+| `explain` | `explain <symbol>` | Signature, doc, members, callers, callees, supertypes, implementations, types used |
+| `source` | `source <symbol>` | One symbol's source with line numbers |
+| `callers` | `callers <symbol> [--depth N]` | Call sites, or transitive callers by distance |
+| `callees` | `callees <symbol>` | What a symbol calls, in order |
+| `impact` | `impact <symbol>` | What may break if it changes, and the tests to run |
+| `repo_map` | `map` | PageRank-ranked overview of the most depended-on code |
+| `outline` | `outline <file>` | All symbols in a file, nested, with line ranges |
+| `call_path` | `path <from> <to>` | Shortest dependency chain between two symbols |
+| `dead_code` | `dead-code` | Functions and methods nothing uses |
+| `neighborhood` | `neighborhood <symbol>` | Symbols and edges within N hops |
+| `reindex`, `index_status` | `index`, `status` | Force a re-index / show index health and resolution stats |
 
-# Search by name or description
-adaptive-codegraph search "parse the config file"
+The daemon (`adaptive-codegraph-daemon --base .`) is optional: it watches files and re-indexes in the background, so even the first query after a big change is instant.
 
-# Everything about a symbol / its source
-adaptive-codegraph explain Store::save
-adaptive-codegraph source Store::save
+---
 
-# Callers (transitive with --depth), callees
-adaptive-codegraph callers handle_request --depth 3
-adaptive-codegraph callees main
+## 🔬 How it works
 
-# What breaks if this changes, and which tests to run
-adaptive-codegraph impact normalize_type
-
-# Relevant code for a task, ~2000 tokens
-adaptive-codegraph context "add retry to the http client" --budget 2000
-
-# Ranked map of the repo, file outline, dependency path, unused code
-adaptive-codegraph map --budget 1500
-adaptive-codegraph outline src/store.rs
-adaptive-codegraph path main normalize_type
-adaptive-codegraph dead-code --path src/
-
-# BFS neighborhood (depth 3)
-adaptive-codegraph neighborhood "main" --depth 3
-
-# List detected languages
-adaptive-codegraph languages
-
-# Check index status
-adaptive-codegraph status
+```mermaid
+flowchart LR
+    A[Source files] -->|tree-sitter + .scm queries| B[Per-file facts<br/>symbols · call sites · imports · local types]
+    B -->|whole-project resolver| C[Code graph<br/>calls · imports · inherits · implements<br/>overrides · references · renders]
+    C --> D[Insight<br/>impact · context · repo map · paths]
+    B --> E[Search index<br/>BM25 on names, docs, bodies<br/>+ embeddings]
+    D --> F((MCP · CLI · plugin))
+    E --> F
 ```
 
-You can also specify a different project with `--base`:
+1. **Extract** (per file, in parallel). Tree-sitter queries pull out definitions, plus raw facts: each call site with its qualifier (`Type::f`) or receiver (`obj.f`), imports with aliases, and the declared or inferred types of parameters, locals, fields and loop variables.
+2. **Resolve** (whole project). Each call is matched by:
+   - enclosing scopes, then imports (incl. globs, re-exports and workspace packages from `Cargo.toml` / `go.mod` / `package.json`)
+   - for method calls: `self`/`this`, the receiver's inferred type, and members inherited through supertypes and interfaces
+
+   Edges get a confidence: **certain**, **inferred**, or **guess**. When several targets are plausible, the call is left unlinked.
+3. **Derive.** Inheritance and interface links, method overrides, type references, file-level imports.
+4. **Index for search.** Names split into words (`parseHTTPRequest` → `parse http request`), doc comments, signatures and body words, stemmed and weighted, plus BGE-small embeddings.
+5. **Stay fresh.** Changed files are found by mtime/size (no git needed) and re-parsed, then resolution re-runs over the stored facts (about a second on vscode). That's why incremental results equal a full rebuild.
+
+<details>
+<summary><b>Key design decisions</b></summary>
+
+| Decision | Why |
+|---|---|
+| Tree-sitter `.scm` queries with a small capture vocabulary | Adding a language is query files, not Rust code |
+| Extraction and resolution as separate stages | Parsing is the expensive part and stays incremental; resolution is cheap and global, so results are always consistent |
+| Confidence on every edge, ambiguity left unlinked | A missing edge is visible; a wrong edge misleads |
+| String-based symbol and edge kinds | New kinds without recompiling |
+| BLAKE3 symbol IDs over (lang, kind, qualified name, file) | Stable across edits that don't rename or move a symbol |
+| Plain-text tool output with 1-based `file:line` | Cheap for models to read and act on |
+
+</details>
+
+---
+
+## 📊 Benchmarks
+
+`acg-bench` (in `crates/bench`) measures accuracy against hand-labelled ground truth. *Held-out* fixtures were written after the resolver, with patterns it wasn't built for, so they're the honest numbers.
+
+| | Before | Now |
+|---|---|---|
+| Call edges, all fixtures (precision / recall) | 0.45 / 0.43 | **1.00 / 0.98** |
+| Call edges, held-out fixtures | ~0.22 / ~0.24 | **1.00 / 0.94** |
+| Incremental vs full re-index | lost 5–8 edges per fixture | **identical** |
+| Impact analysis, static (precision / recall) | – | **1.00 / 0.97** |
+| Search MRR, 24 questions on ast-grep | 0.32 | **0.56** lexical · **0.78** hybrid |
+| Duplicate IDs / duplicate edges on vscode `src/` | 57k / 197k | **0 / 0** |
+| Full index, vscode `src/` (6.3k files, lexical) | 6.7 s | 9.7 s (doing far more) |
+
+Reproduce:
 
 ```bash
-adaptive-codegraph --base /path/to/other/project index
+cargo run --release -p adaptive-codegraph-bench -- --label mine --verbose \
+  --repo /path/to/some/repo \
+  --search-repo /path/to/ast-grep --search-queries bench/search/ast-grep.txt
 ```
+
+**Known limits:**
+- No flow analysis: calls on untyped values that are passed around, or on closure parameters inside iterator chains, are missed.
+- Callbacks passed as values and reflection don't produce edges, so "no callers" means "no static callers".
+- For airtight answers in a single language, a language server is more precise. This tool trades a little precision for one fast, uniform graph across many languages.
+
+---
+
+## 🌐 Adding a language
+
+Three files, no Rust changes. Put them in `.adaptive-codegraph/languages/` (created by `adaptive-codegraph init`) or the repo's `languages/`.
+
+**`languages/ruby.toml`**
+
+```toml
+id = "ruby"
+name = "Ruby"
+extensions = ["rb"]
+grammar = "builtin"
+# module_mode = "directory"   # packages are directories (like Go)
+# scope = "global"            # top-level names visible everywhere (like C)
+```
+
+**`languages/queries/ruby.scm`**: definitions
+
+```scheme
+(method name: (identifier) @symbol.name) @symbol.def
+(class name: (constant) @symbol.name) @symbol.def
+```
+
+**`languages/queries/ruby_edges.scm`**: references, imports, local types
+
+```scheme
+(call method: (identifier) @call.name)                                   ; f()
+(call receiver: (_) @call.receiver method: (identifier) @call.name)      ; obj.f()
+((class superclass: (superclass (constant) @call.name)) (#set! edge "inherits"))
+(assignment left: (identifier) @binding.name right: (call receiver: (constant) @binding.type))
+```
+
+<details>
+<summary><b>Capture reference</b></summary>
+
+| Capture | Meaning |
+|---|---|
+| `@symbol.name`, `@symbol.def` | A definition's name node and whole node |
+| `@symbol.type` | Declared type or return type |
+| `@symbol.container` | Owner type when it isn't a syntactic parent (Go receivers) |
+| `(#set! kind "...")` | Override the inferred symbol kind |
+| `@call.name` + `@call.qualifier` / `@call.receiver` | A reference: `f()`, `T::f()`, `x.f()` |
+| `(#set! edge "inherits")`, `(#set! target "macro")` | Edge kind (default `calls`) / restrict target kind |
+| `@import.path` + `@import.name` / `@import.alias` / `@import.default` | Import of an item |
+| `@import.module` (+ `@import.alias`), `@import.glob` | Whole-module / glob import |
+| `@binding.name` + `@binding.type` / `@binding.call` / `@binding.iter` | Typed local, parameter, `self.x` attribute, or loop variable |
+
+`cargo run -p adaptive-codegraph-core --example dump_tree -- <lang> <file>` prints a file's syntax tree with field names, which is handy for writing queries.
+
+</details>
+
+### Built-in languages
+
+| Language | Extensions | Notes |
+|---|---|---|
+| 🦀 Rust | `.rs` | traits, impls, macros (incl. calls inside macro arguments), workspace crates |
+| 🐍 Python | `.py` | classes, inheritance, `super()`, `self.x` attribute types, relative imports |
+| 🔷 TypeScript / TSX | `.ts` `.mts` `.cts` / `.tsx` | interfaces, `implements`, re-exports, JSX `renders` edges |
+| 📜 JavaScript / JSX | `.js` `.jsx` `.mjs` `.cjs` | `require`, classes, JSX |
+| 🐹 Go | `.go` | packages as directories, receivers, embedding |
+| 🇨 C | `.c` `.h` | global scope, struct fields, includes |
 
 ---
 
 ## ⚙️ Configuration
 
-Place `.adaptive-codegraph.toml` in your project root. If absent, languages are auto-detected.
-
-### Minimal
+Optional: `.adaptive-codegraph.toml` in the project root.
 
 ```toml
-roots = ["src"]
-```
-
-### Full
-
-```toml
-roots = ["src", "lib"]
+roots = ["src", "lib"]                    # what to index (default: everything)
+exclude = ["**/generated/**", "**/*.min.js"]
 index_dir = ".adaptive-codegraph"
-exclude = [
-  "**/.git/**",
-  "**/node_modules/**",
-  "**/target/**",
-  "**/build/**",
-  "**/*.min.js",
-]
-
-[[languages]]
-id = "c"
-extensions = ["c", "h"]
-
-[[languages]]
-id = "javascript"
-extensions = ["js"]
+max_file_bytes = 1000000                  # skip larger files
+max_files = 60000                         # refuse to index more than this
 ```
 
-### Config Reference
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `roots` | `string[]` | `["."]` | Directories to index |
-| `index_dir` | `string` | `".adaptive-codegraph"` | Index storage location |
-| `exclude` | `string[]` | *(common patterns)* | Glob patterns to skip |
-| `languages` | `table[]` | *(auto-detected)* | Explicit language list |
-
-### Language Auto-Detection
-
-When `languages` is omitted, the tool scans for marker files:
-
-| Language | Marker Files | Extensions |
-|----------|-------------|------------|
-| C | `Makefile`, `CMakeLists.txt` | `.c`, `.h` |
-| Rust | `Cargo.toml` | `.rs` |
-| Python | `pyproject.toml`, `setup.py`, `requirements.txt` | `.py` |
-| JavaScript | `package.json` | `.js`, `.mjs`, `.cjs` |
-| TypeScript | `tsconfig.json` | `.ts`, `.tsx` |
-| Go | `go.mod` | `.go` |
-| Java | `pom.xml`, `build.gradle` | `.java` |
-| Ruby | `Gemfile` | `.rb` |
-| C# | `*.csproj`, `*.sln` | `.cs` |
-| C++ | `CMakeLists.txt` | `.cpp`, `.cc`, `.cxx`, `.hpp` |
+`.gitignore` is always respected. Embeddings are cached per user (`ACG_MODEL_DIR` overrides the location).
 
 ---
 
-## 📁 Project Layout
+## 📁 Project layout
 
-```
-adaptive-codegraph/
-├── Cargo.toml              # Workspace root
-├── crates/
-│   ├── core/               # Core library (extract, store, search, embed)
-│   ├── cli/                # Command-line interface (clap)
-│   ├── mcp/                # MCP server (JSON-RPC 2.0 over stdio)
-│   └── daemon/             # File-watching daemon (notify-rs)
-└── languages/
-    ├── c.toml              # Language definitions
-    ├── javascript.toml
-    ├── rust.toml
-    ├── python.toml
-    ├── typescript.toml
-    ├── go.toml
-    └── queries/
-        ├── c.scm           # Symbol extraction queries
-        ├── c_edges.scm     # Edge extraction queries
-        ├── javascript.scm
-        ├── javascript_edges.scm
-        ├── rust.scm
-        ├── rust_edges.scm
-        └── ...
+```text
+crates/
+  core/     extraction, resolution, store, search, embeddings, insight, workspace service
+  cli/      adaptive-codegraph
+  mcp/      adaptive-codegraph-mcp (MCP server)
+  daemon/   adaptive-codegraph-daemon (file watcher)
+  bench/    acg-bench (accuracy, search, impact and scale benchmarks)
+languages/  language definitions (.toml + .scm), also compiled into the binary
+plugin/     Claude Code plugin (MCP server, hook, skill, commands)
+mods/       Claude Code status-line mod
+bench/      fixtures, search queries, results
 ```
 
----
+See [DOCS.md](DOCS.md) for more detail and [CHANGELOG.md](CHANGELOG.md) for what changed.
+
+## 🤝 Contributing
+
+Issues and PRs are welcome, especially new languages and new benchmark fixtures. See [CONTRIBUTING.md](CONTRIBUTING.md). Please run `cargo test --workspace` and the benchmark before submitting changes to the resolver.
 
 ## 📄 License
 

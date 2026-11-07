@@ -32,6 +32,13 @@ pub struct Config {
     /// Skip files larger than this (generated/minified code).
     #[serde(default = "default_max_file_bytes")]
     pub max_file_bytes: u64,
+    /// Refuse to index more source files than this (e.g. a home directory).
+    #[serde(default = "default_max_files")]
+    pub max_files: usize,
+}
+
+fn default_max_files() -> usize {
+    60_000
 }
 
 fn default_max_file_bytes() -> u64 {
@@ -74,6 +81,7 @@ impl Default for Config {
             index_dir: PathBuf::from(".adaptive-codegraph"),
             languages: Vec::new(),
             max_file_bytes: default_max_file_bytes(),
+            max_files: default_max_files(),
         }
     }
 }

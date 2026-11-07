@@ -2,6 +2,10 @@
 
 > Language-agnostic code graph indexer, search engine, and MCP server.
 
+> **Note:** the [README](README.md) is the up-to-date reference for the tools,
+> CLI commands, the Claude Code plugin and benchmarks. Parts of this document
+> (MCP tool list, incremental indexing, embeddings) still describe v0.1.
+
 ---
 
 ## Table of Contents

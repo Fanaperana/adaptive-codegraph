@@ -19,6 +19,49 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// Exclusive lock on an index directory across processes (the session hook,
+/// the MCP server, the daemon and the CLI may all update the same index).
+/// Released on drop; a lock older than 15 minutes is treated as stale.
+pub struct IndexLock {
+    path: PathBuf,
+}
+
+impl IndexLock {
+    pub fn acquire(index_dir: &Path) -> anyhow::Result<Self> {
+        std::fs::create_dir_all(index_dir)?;
+        let path = index_dir.join("index.lock");
+        let start = std::time::Instant::now();
+        loop {
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(_) => return Ok(Self { path }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let stale = std::fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .map(|age| age > std::time::Duration::from_secs(900))
+                        .unwrap_or(false);
+                    if stale {
+                        let _ = std::fs::remove_file(&path);
+                        continue;
+                    }
+                    if start.elapsed() > std::time::Duration::from_secs(300) {
+                        anyhow::bail!("index is locked by another process ({})", path.display());
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+}
+
+impl Drop for IndexLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 /// Index state saved between runs.
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 pub struct IndexState {
@@ -81,6 +124,11 @@ pub fn update_index(
     let base = config.base.as_deref().unwrap_or(Path::new("."));
     let index_dir = base.join(&config.index_dir);
     std::fs::create_dir_all(&index_dir)?;
+    // Keep the index out of version control in every project it lands in.
+    let ignore = index_dir.join(".gitignore");
+    if !ignore.exists() {
+        let _ = std::fs::write(&ignore, "# created by adaptive-codegraph\n*\n");
+    }
 
     let full = prev.is_none();
     let disk = collect_files(config, registry, base)?;
@@ -451,6 +499,14 @@ fn collect_files(
         }
     }
     files.sort_by(|a, b| a.rel.cmp(&b.rel));
+    if files.len() > config.max_files {
+        anyhow::bail!(
+            "{} has {} source files (limit {}). Index a sub-folder, or set `roots` / `max_files` in .adaptive-codegraph.toml.",
+            base.display(),
+            files.len(),
+            config.max_files
+        );
+    }
     Ok(files)
 }
 

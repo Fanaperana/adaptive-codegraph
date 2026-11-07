@@ -176,7 +176,20 @@ fn main() -> Result<()> {
             );
             return Ok(());
         }
+        Commands::Status => {
+            // Report only: never build an index just to show its status.
+            if !ws.load_existing() {
+                println!("No index yet for {}. Any query (or `adaptive-codegraph index`) builds it.", base.display().to_string().trim_start_matches(r"\\?\"));
+                return Ok(());
+            }
+            ws.status_text()
+        }
         Commands::SessionStart { budget } => {
+            // Stay silent outside projects (e.g. a session in the home folder)
+            // and when disabled.
+            if std::env::var_os("ACG_DISABLE").is_some() || !ws.is_project() {
+                return Ok(());
+            }
             // Never fail a session start: print what we can.
             match ws.ensure_fresh() {
                 Ok(_) => {
