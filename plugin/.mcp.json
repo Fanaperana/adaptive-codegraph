@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "adaptive-codegraph": {
+      "command": "adaptive-codegraph-mcp",
+      "args": ["--base", "."]
+    }
+  }
+}

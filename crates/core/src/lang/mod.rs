@@ -43,11 +43,8 @@ pub fn build_registry(base: &Path) -> anyhow::Result<ExtractorRegistry> {
     // Try to find languages/ next to the binary first
     let lang_dir = find_languages_dir(base);
     let Some(lang_dir) = lang_dir else {
-        tracing::warn!(
-            "No languages/ directory found (checked binary dir and {base})",
-            base = base.display()
-        );
-        return Ok(registry);
+        tracing::info!("No languages/ directory found; using the built-in language definitions");
+        return build_embedded_registry();
     };
     tracing::info!("Using languages/ from {}", lang_dir.display());
 
@@ -134,6 +131,42 @@ fn find_languages_dir(base: &Path) -> Option<PathBuf> {
     }
 
     None
+}
+
+/// Registry from the language definitions compiled into the binary, so a
+/// project needs no `languages/` folder or `init` to be indexed.
+pub fn build_embedded_registry() -> anyhow::Result<ExtractorRegistry> {
+    let mut registry = ExtractorRegistry::new();
+    let query = |name: &str| {
+        embedded::query_files()
+            .iter()
+            .find(|f| f.name == name)
+            .map(|f| f.content.to_string())
+            .unwrap_or_default()
+    };
+    for f in embedded::toml_files() {
+        let def: LanguageDef = toml::from_str(f.content)?;
+        let file_name = |p: &Option<PathBuf>, default: String| {
+            p.as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or(default)
+        };
+        let sq = query(&file_name(&def.symbol_query, format!("{}.scm", def.id)));
+        let eq = query(&file_name(&def.edge_query, format!("{}_edges.scm", def.id)));
+        let extensions = def.extensions.clone();
+        let config = TreeSitterConfig {
+            ts_language: resolve_grammar(&def.grammar, &def.id)?,
+            lang_id: def.id,
+            extensions: def.extensions,
+            symbol_query: sq,
+            edge_query: eq,
+            profile: def.profile,
+        };
+        let ext_refs: Vec<&str> = extensions.iter().map(|s| s.as_str()).collect();
+        registry.register_with_extensions(Box::new(TreeSitterExtractor::new(config)?), &ext_refs);
+    }
+    Ok(registry)
 }
 
 /// Load a single language definition and create its extractor.

@@ -104,6 +104,29 @@ pub fn incremental_index(base: &Path, idx: &Path) -> Result<Graph> {
     Ok(snapshot(base, &store))
 }
 
+/// Symbols affected by changing `id` (transitive), as IDs.
+pub fn impact_ids(idx: &Path, id: SymbolId, dispatch: bool) -> Result<Vec<SymbolId>> {
+    let store = Store::load(&idx.join("graph.bin"))?;
+    Ok(adaptive_codegraph_core::insight::impact_with(&store, id, 10, 10_000, dispatch)
+        .into_iter()
+        .map(|e| e.id)
+        .collect())
+}
+
+/// Task context for a query, plus the size of the whole file holding the
+/// expected symbol (what an agent would otherwise read).
+pub fn context_text(ctx: &SearchCtx, base: &Path, q: &str, max_chars: usize) -> Result<String> {
+    adaptive_codegraph_core::insight::context(
+        &ctx.store,
+        base,
+        &ctx.search,
+        ctx.vectors.as_ref(),
+        Some(ctx.embedder.as_ref()),
+        q,
+        max_chars,
+    )
+}
+
 /// Loaded search state for running many queries.
 pub struct SearchCtx {
     store: Store,

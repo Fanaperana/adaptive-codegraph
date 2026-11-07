@@ -210,7 +210,7 @@ pub fn format_neighborhood(store: &Store, n: &Neighborhood) -> String {
     let mut out = String::new();
     if let Some(c) = store.get(&n.center) {
         out.push_str(&format!(
-            "Neighborhood of {} ({}) — {} nodes, {} edges\n",
+            "Neighborhood of {} ({}) - {} nodes, {} edges\n",
             display_name(c),
             location(c),
             n.nodes.len(),
@@ -222,7 +222,7 @@ pub fn format_neighborhood(store: &Store, n: &Neighborhood) -> String {
         if let Some(s) = store.get(id) {
             let marker = if *id == n.center { "  [center]" } else { "" };
             out.push_str(&format!(
-                "  {} {} — {}-{}{}\n",
+                "  {} {} - {}-{}{}\n",
                 s.kind,
                 display_name(s),
                 location(s),

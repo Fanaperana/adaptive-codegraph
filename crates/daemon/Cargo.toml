@@ -3,8 +3,12 @@ name = "adaptive-codegraph-daemon"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["fastembed"]
+fastembed = ["adaptive-codegraph-core/fastembed"]
+
 [dependencies]
-adaptive-codegraph-core = { path = "../core" }
+adaptive-codegraph-core = { path = "../core", default-features = false }
 clap = { workspace = true }
 tokio = { workspace = true }
 notify = { workspace = true }

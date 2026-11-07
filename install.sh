@@ -3,18 +3,22 @@ set -euo pipefail
 
 echo "🔧 Installing adaptive-codegraph..."
 
-# Build release binaries
-cargo build --release 2>&1 | tail -3
+# Build release binaries (add --no-default-features to skip the embedding model)
+cargo build --release -p adaptive-codegraph-cli -p adaptive-codegraph-mcp -p adaptive-codegraph-daemon "$@" 2>&1 | tail -3
+
+# Windows builds produce .exe files
+EXE=""
+if [ -f target/release/adaptive-codegraph-cli.exe ]; then EXE=".exe"; fi
 
 # Determine install directory
 INSTALL_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
 mkdir -p "$INSTALL_DIR"
 
 # Install binaries (rm first to avoid "text file busy" errors)
-rm -f "$INSTALL_DIR/adaptive-codegraph" "$INSTALL_DIR/adaptive-codegraph-mcp" "$INSTALL_DIR/adaptive-codegraph-daemon"
-cp target/release/adaptive-codegraph-cli "$INSTALL_DIR/adaptive-codegraph"
-cp target/release/adaptive-codegraph-mcp "$INSTALL_DIR/adaptive-codegraph-mcp"
-cp target/release/adaptive-codegraph-daemon "$INSTALL_DIR/adaptive-codegraph-daemon"
+rm -f "$INSTALL_DIR/adaptive-codegraph$EXE" "$INSTALL_DIR/adaptive-codegraph-mcp$EXE" "$INSTALL_DIR/adaptive-codegraph-daemon$EXE"
+cp "target/release/adaptive-codegraph-cli$EXE" "$INSTALL_DIR/adaptive-codegraph$EXE"
+cp "target/release/adaptive-codegraph-mcp$EXE" "$INSTALL_DIR/adaptive-codegraph-mcp$EXE"
+cp "target/release/adaptive-codegraph-daemon$EXE" "$INSTALL_DIR/adaptive-codegraph-daemon$EXE"
 
 echo ""
 echo "✅ Installed to $INSTALL_DIR/"

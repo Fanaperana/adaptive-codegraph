@@ -83,7 +83,6 @@ pub fn update_index(
     std::fs::create_dir_all(&index_dir)?;
 
     let full = prev.is_none();
-    let mut facts: BTreeMap<String, FileFacts> = prev.map(|s| s.facts).unwrap_or_default();
     let disk = collect_files(config, registry, base)?;
     let mut stats = UpdateStats {
         files_total: disk.len(),
@@ -91,8 +90,10 @@ pub fn update_index(
     };
 
     // Work out what changed.
+    let empty = BTreeMap::new();
+    let old_facts = prev.as_ref().map(|s| &s.facts).unwrap_or(&empty);
     let on_disk: HashSet<&str> = disk.iter().map(|f| f.rel.as_str()).collect();
-    let deleted: Vec<String> = facts
+    let deleted: Vec<String> = old_facts
         .keys()
         .filter(|k| !on_disk.contains(k.as_str()))
         .cloned()
@@ -100,7 +101,7 @@ pub fn update_index(
     let changed: Vec<&DiskFile> = disk
         .iter()
         .filter(|f| {
-            facts
+            old_facts
                 .get(&f.rel)
                 .map(|old| old.mtime != f.mtime || old.size != f.size)
                 .unwrap_or(true)
@@ -108,6 +109,19 @@ pub fn update_index(
         .collect();
     stats.files_deleted = deleted.len();
     stats.files_parsed = changed.len();
+
+    // Nothing changed: keep everything as it is (no re-resolution, no writes).
+    let unchanged = prev
+        .as_ref()
+        .map(|p| deleted.is_empty() && changed.is_empty() && p.profiles == registry.profiles())
+        .unwrap_or(false);
+    if unchanged {
+        let store = prev.expect("checked above");
+        let search = SearchIndex::open(&index_dir)?;
+        let vectors = VectorIndex::load(&index_dir.join("vectors.bin")).unwrap_or_else(|_| VectorIndex::new(0));
+        return Ok((store, search, vectors, stats));
+    }
+    let mut facts: BTreeMap<String, FileFacts> = prev.map(|s| s.facts).unwrap_or_default();
 
     let mut removed_ids: HashSet<SymbolId> = HashSet::new();
     for rel in deleted.iter().map(|s| s.as_str()).chain(changed.iter().map(|f| f.rel.as_str())) {

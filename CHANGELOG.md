@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Whole-project resolver**: calls are resolved through scopes, imports
+  (incl. aliases, globs, re-exports, workspace packages), `self`/`this`,
+  local variable / parameter / field / loop-variable types, and supertypes.
+  Every edge carries a confidence (certain / inferred / guess); ambiguous
+  calls are left unlinked instead of guessed.
+- **New edge kinds**: `inherits`, `implements`, `overrides`, `references`,
+  `renders` (JSX), plus file-level `imports`.
+- **Insight**: `impact` (what breaks, which tests), `repo_map` (PageRank),
+  `context` (budgeted task bundle), `explain`, `source`, `outline`,
+  `call_path`, `dead_code`.
+- **Code-aware search**: split identifiers, docs, signatures and body words;
+  weighted fields; lenient queries; hybrid lexical + embedding ranking.
+- **MCP server rewrite**: 14 name-based tools with plain-text answers,
+  server instructions, auto-built and auto-refreshed index, protocol fixes
+  (no replies to notifications, `ping`, version negotiation).
+- **Claude Code plugin** in `plugin/` and a marketplace manifest.
+- **TSX** language; Go package and C global scoping via language profiles;
+  built-in language definitions used when no `languages/` folder exists.
+- **`acg-bench`**: ground-truth call-graph fixtures (design + held-out),
+  impact, search and scale benchmarks. Results in `bench/RESULTS.md`.
+
+### Fixed
+
+- Calls were linked by name only (e.g. `iter().find()` → an enum variant
+  `Find`); callers were attributed to enclosing modules/impl blocks.
+- Duplicate symbol IDs (methods in impl blocks, decorated/exported
+  definitions) and duplicate edges.
+- Incremental reindex dropped call edges; it now matches a full index.
+- Absolute `\\?\` paths in the index; 0-based line numbers in output.
+- Search re-indexed duplicates on every full index; `::` in a query errored.
+- `--no-default-features` did not remove the embedding model from the CLI,
+  MCP server and daemon.
+- The daemon could miss changes made during its debounce window.
+- `install.sh` did not work on Windows.
+
 ## [0.1.0] - 2026-05-16
 
 ### Added

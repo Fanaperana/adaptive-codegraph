@@ -1,23 +1,16 @@
 //! # MCP Server for adaptive-codegraph
 //!
-//! JSON-RPC 2.0 over stdio with MCP tool surface.
+//! JSON-RPC 2.0 over stdio. Every tool answers in compact plain text sized
+//! for a model's context window, takes symbols by name (`save`,
+//! `Store::save`, `Store.save`) or ID, and works on a fresh index: the
+//! index is built on first use and changed files are re-indexed before
+//! answering.
 
-use adaptive_codegraph_core::{
-    config::Config,
-    embed::{self, VectorIndex},
-    extract::plugin::PluginRegistry,
-    incremental,
-    index::{self, IndexState},
-    lang,
-    query,
-    search::SearchIndex,
-    store::Store,
-};
+use adaptive_codegraph_core::service::Workspace;
 use anyhow::Result;
 use clap::Parser;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
-use std::cell::RefCell;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
@@ -29,14 +22,19 @@ struct Args {
     base: String,
 }
 
-#[derive(Deserialize)]
-struct Req {
-    jsonrpc: String,
-    id: Option<Value>,
-    method: String,
-    #[serde(default)]
-    params: Value,
-}
+const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+
+const INSTRUCTIONS: &str = "\
+adaptive-codegraph indexes this repository into a code graph (symbols, calls, \
+imports, inheritance, type usage) and keeps it up to date as files change. \
+Prefer it over grep/glob for questions about code structure:
+- Don't know where something is? `search` (natural language or names) or `context` (task description → relevant code in one call).
+- Before editing a function or type: `impact` (what depends on it, which tests to run) and `explain` (callers, callees, subtypes, members).
+- Reading code: `source` for one symbol, `outline` for a file's structure — cheaper than reading whole files.
+- New to the repo: `repo_map` (the most depended-on code, ranked).
+- How does A reach B: `call_path`.
+Symbols can be given as `name`, `Type::method`, `Type.method`, or an ID from earlier output. \
+Edges marked (inferred) or ? are lower confidence. Dynamic calls (callbacks, reflection) may be missing.";
 
 #[derive(Serialize)]
 struct Resp<'a> {
@@ -45,88 +43,21 @@ struct Resp<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<RpcErr>,
-}
-
-#[derive(Serialize)]
-struct RpcErr {
-    code: i64,
-    message: String,
-}
-
-struct Ctx {
-    base: PathBuf,
-    config: Config,
-    store: RefCell<Store>,
-    index_dir: PathBuf,
-    bm25: RefCell<Option<SearchIndex>>,
-    vectors: RefCell<Option<VectorIndex>>,
-}
-
-impl Ctx {
-    fn bm25(&self) -> std::result::Result<std::cell::Ref<'_, SearchIndex>, String> {
-        if self.bm25.borrow().is_none() {
-            let idx = SearchIndex::open(&self.index_dir)
-                .map_err(|e| format!("open bm25: {e}"))?;
-            *self.bm25.borrow_mut() = Some(idx);
-        }
-        Ok(std::cell::Ref::map(self.bm25.borrow(), |o| {
-            o.as_ref().unwrap()
-        }))
-    }
-
-    fn vectors(&self) -> std::result::Result<std::cell::Ref<'_, VectorIndex>, String> {
-        if self.vectors.borrow().is_none() {
-            let path = self.index_dir.join("vectors.bin");
-            if path.exists() {
-                let v = VectorIndex::load(&path)
-                    .map_err(|e| format!("load vectors: {e}"))?;
-                *self.vectors.borrow_mut() = Some(v);
-            } else {
-                return Err("no vector index found; run index first".into());
-            }
-        }
-        Ok(std::cell::Ref::map(self.vectors.borrow(), |o| {
-            o.as_ref().unwrap()
-        }))
-    }
-
-    fn reload_after_reindex(&self) -> std::result::Result<(), String> {
-        match Store::load(&self.index_dir.join("graph.bin")) {
-            Ok(s) => *self.store.borrow_mut() = s,
-            Err(e) => return Err(format!("reload store: {e}")),
-        }
-        *self.bm25.borrow_mut() = None;
-        *self.vectors.borrow_mut() = None;
-        Ok(())
-    }
+    error: Option<Value>,
 }
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
+        )
         .with_writer(io::stderr)
         .with_target(false)
         .init();
 
     let args = Args::parse();
     let base = PathBuf::from(&args.base).canonicalize()?;
-    let config = Config::load(&base)?;
-    let index_dir = base.join(&config.index_dir);
-
-    let store = Store::load(&index_dir.join("graph.bin")).unwrap_or_else(|e| {
-        eprintln!("warn: load store failed: {e}; serving empty store");
-        Store::new()
-    });
-
-    let ctx = Ctx {
-        base,
-        config,
-        store: RefCell::new(store),
-        index_dir,
-        bm25: RefCell::new(None),
-        vectors: RefCell::new(None),
-    };
+    let mut ws = Workspace::open(&base)?;
 
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
@@ -135,346 +66,187 @@ fn main() -> Result<()> {
         if line.trim().is_empty() {
             continue;
         }
-        let req: Req = match serde_json::from_str(&line) {
-            Ok(r) => r,
+        let msg: Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
             Err(e) => {
-                write_err(&mut stdout, Value::Null, -32700, &format!("parse: {e}"))?;
+                write(&mut stdout, Value::Null, None, Some(rpc_error(-32700, &format!("parse error: {e}"))))?;
                 continue;
             }
         };
-        let id = req.id.clone().unwrap_or(Value::Null);
-        match dispatch(&ctx, &req) {
-            Ok(v) => write_ok(&mut stdout, id, v)?,
-            Err((code, msg)) => write_err(&mut stdout, id, code, &msg)?,
+        // Notifications (no id) never get a response.
+        let Some(id) = msg.get("id").cloned() else { continue };
+        let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
+        let params = msg.get("params").cloned().unwrap_or(Value::Null);
+        match dispatch(&mut ws, method, &params) {
+            Ok(v) => write(&mut stdout, id, Some(v), None)?,
+            Err((code, m)) => write(&mut stdout, id, None, Some(rpc_error(code, &m)))?,
         }
     }
     Ok(())
 }
 
-fn dispatch(ctx: &Ctx, req: &Req) -> std::result::Result<Value, (i64, String)> {
-    if req.jsonrpc != "2.0" {
-        return Err((-32600, "expected jsonrpc 2.0".into()));
-    }
-    match req.method.as_str() {
-        "initialize" => Ok(json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": { "tools": {} },
-            "serverInfo": {
-                "name": "adaptive-codegraph-mcp",
-                "version": env!("CARGO_PKG_VERSION")
-            }
-        })),
+fn rpc_error(code: i64, message: &str) -> Value {
+    json!({ "code": code, "message": message })
+}
+
+fn write<W: Write>(w: &mut W, id: Value, result: Option<Value>, error: Option<Value>) -> Result<()> {
+    let s = serde_json::to_string(&Resp {
+        jsonrpc: "2.0",
+        id,
+        result,
+        error,
+    })?;
+    writeln!(w, "{s}")?;
+    w.flush()?;
+    Ok(())
+}
+
+fn dispatch(ws: &mut Workspace, method: &str, params: &Value) -> std::result::Result<Value, (i64, String)> {
+    match method {
+        "initialize" => {
+            let requested = params.get("protocolVersion").and_then(|v| v.as_str()).unwrap_or("");
+            let version = if PROTOCOL_VERSIONS.contains(&requested) { requested } else { PROTOCOL_VERSIONS[0] };
+            Ok(json!({
+                "protocolVersion": version,
+                "capabilities": { "tools": { "listChanged": false } },
+                "serverInfo": { "name": "adaptive-codegraph", "version": env!("CARGO_PKG_VERSION") },
+                "instructions": INSTRUCTIONS,
+            }))
+        }
+        "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tools_list() })),
         "tools/call" => {
-            let name = req
-                .params
+            let name = params
                 .get("name")
                 .and_then(|v| v.as_str())
-                .ok_or((-32602, "missing name".into()))?;
-            let args = req.params.get("arguments").cloned().unwrap_or(Value::Null);
-            let out = call_tool(ctx, name, &args)?;
-            Ok(json!({ "content": [{ "type": "text", "text": out.to_string() }] }))
+                .ok_or((-32602, "missing tool name".to_string()))?;
+            let args = params.get("arguments").cloned().unwrap_or(json!({}));
+            let (text, is_error) = match call_tool(ws, name, &args) {
+                Ok(t) => (t, false),
+                Err(e) => (format!("Error: {e}"), true),
+            };
+            Ok(json!({ "content": [{ "type": "text", "text": text }], "isError": is_error }))
         }
-        _ => Err((-32601, format!("unknown method {}", req.method))),
+        _ => Err((-32601, format!("unknown method {method}"))),
     }
+}
+
+fn tool(name: &str, title: &str, desc: &str, props: Value, required: &[&str], read_only: bool) -> Value {
+    json!({
+        "name": name,
+        "title": title,
+        "description": desc,
+        "inputSchema": { "type": "object", "properties": props, "required": required },
+        "annotations": { "title": title, "readOnlyHint": read_only, "openWorldHint": false },
+    })
 }
 
 fn tools_list() -> Value {
+    let symbol = json!({"type": "string", "description": "Symbol name: `save`, `Store::save`, `Store.save`, `path/file.rs::Store::save`, or an ID"});
     json!([
-        tool("search",
-            "BM25 full-text search over symbol names, fqnames, signatures, and file paths.",
-            json!({"type":"object","properties":{
-                "query":{"type":"string"},
-                "limit":{"type":"integer","default":20}
-            },"required":["query"]})),
-        tool("semantic_search",
-            "Vector similarity search over symbols using embeddings. Finds semantically similar code even when names differ.",
-            json!({"type":"object","properties":{
-                "query":{"type":"string"},
-                "limit":{"type":"integer","default":10}
-            },"required":["query"]})),
-        tool("find_symbol",
-            "Substring search for a symbol by name. Returns matches with file/line.",
-            json!({"type":"object","properties":{
-                "needle":{"type":"string"},
-                "kind":{"type":"string"},
-                "lang":{"type":"string"},
-                "limit":{"type":"integer","default":20}
-            },"required":["needle"]})),
-        tool("get_symbol",
-            "Get a symbol by id (32-hex).",
-            json!({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})),
-        tool("find_callers",
-            "Functions that call this symbol.",
-            json!({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})),
-        tool("find_callees",
-            "Functions called by this symbol.",
-            json!({"type":"object","properties":{"id":{"type":"string"}},"required":["id"]})),
-        tool("expand_neighborhood",
-            "BFS subgraph around a symbol (default depth=2, cap=50).",
-            json!({"type":"object","properties":{
-                "id":{"type":"string"},
-                "depth":{"type":"integer","default":2},
-                "cap":{"type":"integer","default":50}
-            },"required":["id"]})),
-        tool("index",
-            "Full rebuild of the codebase index.",
-            json!({"type":"object","properties":{}})),
-        tool("incremental_index",
-            "Incremental reindex: only re-process files changed since last index (git-aware).",
-            json!({"type":"object","properties":{}})),
-        tool("index_status",
-            "Report what is indexed: git HEAD, file count, symbol count.",
-            json!({"type":"object","properties":{}})),
+        tool("search", "Search code",
+            "Find functions, classes and other symbols by name or by describing what they do. Ranked by relevance and how widely the symbol is used.",
+            json!({
+                "query": {"type": "string", "description": "Names or a natural-language description"},
+                "limit": {"type": "integer", "default": 15},
+                "kind": {"type": "string", "description": "Only this kind: function, method, class, struct, interface, trait, enum, type, field, ..."},
+                "path": {"type": "string", "description": "Only symbols under this path prefix"}
+            }), &["query"], true),
+        tool("context", "Code context for a task",
+            "Given a task or question, return the most relevant code in one bundle: source of the best-matching symbols plus signatures of what they call and what calls them, within a token budget. Use this first when starting work on an unfamiliar area.",
+            json!({
+                "task": {"type": "string", "description": "What you are trying to do or understand, or a symbol name"},
+                "budget_tokens": {"type": "integer", "default": 2000}
+            }), &["task"], true),
+        tool("explain", "Explain a symbol",
+            "Everything known about one symbol: signature, doc, location, members, callers, callees, supertypes, subtypes/implementations, overrides, and types it uses.",
+            json!({"symbol": symbol}), &["symbol"], true),
+        tool("source", "Read a symbol's source",
+            "Source code of one symbol with line numbers (long bodies are trimmed in the middle). Cheaper than reading the whole file.",
+            json!({"symbol": symbol, "max_lines": {"type": "integer", "default": 150}}), &["symbol"], true),
+        tool("callers", "Who calls this",
+            "Call sites of a function/method (file:line). With depth > 1, transitive callers grouped by distance.",
+            json!({"symbol": symbol, "depth": {"type": "integer", "default": 1}}), &["symbol"], true),
+        tool("callees", "What this calls",
+            "Functions/methods called by a symbol, in order, with their locations.",
+            json!({"symbol": symbol}), &["symbol"], true),
+        tool("impact", "Change impact",
+            "What may break if this symbol changes: transitive callers, users of a type, subclasses/implementations, and callers that reach it through an interface. Lists affected tests.",
+            json!({"symbol": symbol, "depth": {"type": "integer", "default": 4}}), &["symbol"], true),
+        tool("repo_map", "Repository map",
+            "Ranked overview of the most important (most depended-on) symbols grouped by file, with signatures. Good first call in a new codebase.",
+            json!({
+                "budget_tokens": {"type": "integer", "default": 1500},
+                "path": {"type": "string", "description": "Only files under this path prefix"}
+            }), &[], true),
+        tool("outline", "File outline",
+            "All symbols in a file, nested, with kinds, signatures and line ranges.",
+            json!({"file": {"type": "string", "description": "Workspace-relative path (a unique suffix is enough)"}}), &["file"], true),
+        tool("call_path", "Dependency path",
+            "Shortest chain of calls/references from one symbol to another.",
+            json!({"from": symbol.clone(), "to": symbol.clone()}), &["from", "to"], true),
+        tool("dead_code", "Unused code",
+            "Functions and methods nothing in the project calls or references (candidates: entry points and callbacks can look unused).",
+            json!({"path": {"type": "string"}, "limit": {"type": "integer", "default": 50}}), &[], true),
+        tool("neighborhood", "Graph neighborhood",
+            "Symbols and edges within N hops of a symbol.",
+            json!({"symbol": symbol, "depth": {"type": "integer", "default": 1}, "cap": {"type": "integer", "default": 40}}), &["symbol"], true),
+        tool("reindex", "Re-index",
+            "Re-index changed files now (normally automatic), or rebuild everything with full=true.",
+            json!({"full": {"type": "boolean", "default": false}}), &[], false),
+        tool("index_status", "Index status",
+            "What is indexed: files, symbols, edges, languages, resolution quality.",
+            json!({}), &[], true),
     ])
 }
 
-fn tool(name: &str, desc: &str, schema: Value) -> Value {
-    json!({ "name": name, "description": desc, "inputSchema": schema })
+fn s<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
+    args.get(key).and_then(|v| v.as_str()).filter(|v| !v.trim().is_empty())
 }
 
-fn call_tool(ctx: &Ctx, name: &str, args: &Value) -> std::result::Result<Value, (i64, String)> {
-    match name {
-        "index" => {
-            let registry = lang::build_registry(&ctx.base)
-                .map_err(|e| (-32603, format!("build_registry: {e}")))?;
-            let plugins = PluginRegistry::new();
-            let (store, _search, _vectors) =
-                index::full_index(&ctx.config, &registry, &plugins)
-                    .map_err(|e| (-32603, format!("full_index: {e}")))?;
-            let syms = store.symbol_count();
-            let edges = store.edge_count();
-            ctx.reload_after_reindex().map_err(|e| (-32603, e))?;
-            return Ok(json!({
-                "symbols": syms,
-                "edges": edges,
-                "status": "ok"
-            }));
-        }
-        "incremental_index" => {
-            let registry = lang::build_registry(&ctx.base)
-                .map_err(|e| (-32603, format!("build_registry: {e}")))?;
-            let search = SearchIndex::open(&ctx.index_dir)
-                .map_err(|e| (-32603, format!("open search: {e}")))?;
-            let mut store = {
-                let s = ctx.store.borrow();
-                let data = s.serialize().map_err(|e| (-32603, format!("serialize store: {e}")))?;
-                Store::deserialize(&data).map_err(|e| (-32603, format!("clone store: {e}")))?
-            };
-            let dim = embed::create_embedder().dim();
-            let mut vectors = VectorIndex::load(&ctx.index_dir.join("vectors.bin"))
-                .unwrap_or_else(|_| VectorIndex::new(dim));
-            let result = incremental::incremental_reindex(
-                &ctx.config, &registry, &mut store, &search, &mut vectors,
-            ).map_err(|e| (-32603, format!("incremental_reindex: {e}")))?;
-            ctx.reload_after_reindex().map_err(|e| (-32603, e))?;
-            return Ok(json!({
-                "files_updated": result.files_updated,
-                "files_deleted": result.files_deleted,
-                "symbols_added": result.symbols_added,
-                "symbols_removed": result.symbols_removed,
-                "status": "ok"
-            }));
-        }
-        "index_status" => {
-            let state_path = ctx.index_dir.join("state.json");
-            if !state_path.exists() {
-                return Ok(json!({"status": "no_index"}));
-            }
-            let state = IndexState::load(&state_path)
-                .map_err(|e| (-32603, format!("load state: {e}")))?;
-            let store = ctx.store.borrow();
-            return Ok(json!({
-                "git_head": state.git_head,
-                "indexed_at": state.indexed_at,
-                "file_count": state.file_count,
-                "symbols": store.symbol_count(),
-                "edges": store.edge_count(),
-            }));
-        }
-        _ => {}
+fn n(args: &Value, key: &str, default: usize) -> usize {
+    args.get(key).and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(default)
+}
+
+fn need<'a>(args: &'a Value, keys: &[&str]) -> anyhow::Result<&'a str> {
+    keys.iter()
+        .find_map(|k| s(args, k))
+        .ok_or_else(|| anyhow::anyhow!("missing argument `{}`", keys[0]))
+}
+
+fn call_tool(ws: &mut Workspace, name: &str, args: &Value) -> anyhow::Result<String> {
+    if name == "reindex" || name == "index" || name == "incremental_index" {
+        let full = args.get("full").and_then(|v| v.as_bool()).unwrap_or(name == "index");
+        let note = ws.refresh(full)?.unwrap_or_else(|| "Index is up to date.".into());
+        return Ok(format!("{note}\n{}", ws.status_text()));
     }
-
-    let store = ctx.store.borrow();
-    match name {
-        "find_symbol" => {
-            let needle = args.get("needle").and_then(|v| v.as_str()).unwrap_or("");
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-            let kind = args.get("kind").and_then(|v| v.as_str());
-            let lang = args.get("lang").and_then(|v| v.as_str());
-            let results = store.find_filtered(needle, kind, lang);
-            let hits: Vec<Value> = results
-                .iter()
-                .take(limit)
-                .map(|s| {
-                    json!({
-                        "id": s.id.to_hex(),
-                        "name": s.name,
-                        "kind": s.kind,
-                        "lang": s.lang,
-                        "file": s.file,
-                        "start_line": s.span.start_line + 1,
-                        "end_line": s.span.end_line + 1,
-                        "signature": s.signature,
-                    })
-                })
-                .collect();
-            Ok(json!(hits))
+    let note = ws.ensure_fresh()?;
+    let sym_keys = ["symbol", "id", "name", "needle"];
+    let out = match name {
+        "search" | "semantic_search" | "find_symbol" => ws.search_text(
+            need(args, &["query", "needle"])?,
+            n(args, "limit", 15),
+            s(args, "kind"),
+            s(args, "path"),
+        )?,
+        "context" => ws.context_text(need(args, &["task", "query"])?, n(args, "budget_tokens", 2000))?,
+        "explain" | "get_symbol" => ws.explain_text(need(args, &sym_keys)?),
+        "source" => ws.source_text(need(args, &sym_keys)?, n(args, "max_lines", 150)),
+        "callers" | "find_callers" => ws.callers_text(need(args, &sym_keys)?, n(args, "depth", 1)),
+        "callees" | "find_callees" => ws.callees_text(need(args, &sym_keys)?),
+        "impact" => ws.impact_text(need(args, &sym_keys)?, n(args, "depth", 4)),
+        "repo_map" => ws.repo_map_text(n(args, "budget_tokens", 1500), s(args, "path")),
+        "outline" => ws.outline_text(need(args, &["file", "path"])?),
+        "call_path" => ws.path_text(need(args, &["from"])?, need(args, &["to"])?),
+        "dead_code" => ws.dead_code_text(s(args, "path"), n(args, "limit", 50)),
+        "neighborhood" | "expand_neighborhood" => {
+            ws.neighborhood_text(need(args, &sym_keys)?, n(args, "depth", 1), n(args, "cap", 40))
         }
-        "get_symbol" => {
-            let id_hex = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let id = parse_symbol_id(id_hex)?;
-            match store.get(&id) {
-                Some(s) => Ok(json!({
-                    "id": s.id.to_hex(),
-                    "name": s.name,
-                    "kind": s.kind,
-                    "lang": s.lang,
-                    "file": s.file,
-                    "fqname": s.fqname,
-                    "start_line": s.span.start_line + 1,
-                    "end_line": s.span.end_line + 1,
-                    "signature": s.signature,
-                    "doc": s.doc,
-                })),
-                None => Err((-32602, format!("symbol {id_hex} not found"))),
-            }
-        }
-        "find_callers" => {
-            let id = parse_id_arg(args)?;
-            let callers = store.callers(&id);
-            let hits: Vec<Value> = callers
-                .iter()
-                .map(|(s, e)| {
-                    json!({
-                        "id": s.id.to_hex(),
-                        "name": s.name,
-                        "kind": s.kind,
-                        "file": s.file,
-                        "edge_kind": e.kind,
-                        "line": e.line + 1,
-                        "confidence": e.confidence,
-                    })
-                })
-                .collect();
-            Ok(json!(hits))
-        }
-        "find_callees" => {
-            let id = parse_id_arg(args)?;
-            let callees = store.callees(&id);
-            let hits: Vec<Value> = callees
-                .iter()
-                .map(|(s, e)| {
-                    json!({
-                        "id": s.id.to_hex(),
-                        "name": s.name,
-                        "kind": s.kind,
-                        "file": s.file,
-                        "edge_kind": e.kind,
-                        "line": e.line + 1,
-                        "confidence": e.confidence,
-                    })
-                })
-                .collect();
-            Ok(json!(hits))
-        }
-        "expand_neighborhood" => {
-            let id = parse_id_arg(args)?;
-            let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
-            let cap = args.get("cap").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
-            let n = query::expand_neighborhood(&store, id, depth, cap);
-            Ok(json!({
-                "text": query::format_neighborhood(&store, &n),
-                "node_count": n.nodes.len(),
-                "edge_count": n.edges.len(),
-            }))
-        }
-        "search" => {
-            let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
-            let bm25 = ctx.bm25().map_err(|e| (-32603, e))?;
-            let hits = bm25.search(q, limit).map_err(|e| (-32603, e.to_string()))?;
-            let results: Vec<Value> = hits
-                .iter()
-                .map(|h| {
-                    json!({
-                        "id": h.id.to_hex(),
-                        "name": h.name,
-                        "kind": h.kind,
-                        "lang": h.lang,
-                        "file": h.file,
-                        "score": h.score,
-                    })
-                })
-                .collect();
-            Ok(json!(results))
-        }
-        "semantic_search" => {
-            let q = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
-            let embedder = embed::create_embedder();
-            let query_vec = embedder.embed_one(q)
-                .map_err(|e| (-32603, format!("embed query: {e}")))?;
-            let vectors = ctx.vectors().map_err(|e| (-32603, e))?;
-            let results_raw = vectors.search(&query_vec, limit);
-            let results: Vec<Value> = results_raw
-                .iter()
-                .filter_map(|(id, score)| {
-                    store.get(id).map(|s| {
-                        json!({
-                            "id": s.id.to_hex(),
-                            "name": s.name,
-                            "kind": s.kind,
-                            "lang": s.lang,
-                            "file": s.file,
-                            "score": score,
-                        })
-                    })
-                })
-                .collect();
-            Ok(json!(results))
-        }
-        _ => Err((-32601, format!("unknown tool {name}"))),
-    }
-}
-
-fn parse_id_arg(args: &Value) -> std::result::Result<adaptive_codegraph_core::model::SymbolId, (i64, String)> {
-    let id_hex = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
-    parse_symbol_id(id_hex)
-}
-
-fn parse_symbol_id(
-    hex: &str,
-) -> std::result::Result<adaptive_codegraph_core::model::SymbolId, (i64, String)> {
-    adaptive_codegraph_core::model::SymbolId::from_hex(hex)
-        .map_err(|e| (-32602, format!("invalid id '{hex}': {e}")))
-}
-
-fn write_ok<W: Write>(w: &mut W, id: Value, result: Value) -> Result<()> {
-    let r = Resp {
-        jsonrpc: "2.0",
-        id,
-        result: Some(result),
-        error: None,
+        "index_status" => ws.status_text(),
+        _ => anyhow::bail!("unknown tool {name}"),
     };
-    let s = serde_json::to_string(&r)?;
-    writeln!(w, "{s}")?;
-    w.flush()?;
-    Ok(())
-}
-
-fn write_err<W: Write>(w: &mut W, id: Value, code: i64, message: &str) -> Result<()> {
-    let r = Resp {
-        jsonrpc: "2.0",
-        id,
-        result: None,
-        error: Some(RpcErr {
-            code,
-            message: message.to_string(),
-        }),
-    };
-    let s = serde_json::to_string(&r)?;
-    writeln!(w, "{s}")?;
-    w.flush()?;
-    Ok(())
+    Ok(match note {
+        Some(n) => format!("{n}\n{out}"),
+        None => out,
+    })
 }

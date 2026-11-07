@@ -65,6 +65,11 @@ struct SearchReport {
     current: SearchScore,
     hybrid: Option<SearchScore>,
     misses: Vec<String>,
+    /// Share of queries whose target source is inside `context()`.
+    context_hit_rate: f64,
+    context_avg_chars: usize,
+    /// Average size of the whole file containing the target.
+    whole_file_avg_chars: usize,
 }
 
 #[derive(Serialize, Default, Clone)]
@@ -101,6 +106,10 @@ struct FixtureReport {
     incremental_extra_edges: usize,
     incremental_missing_symbols: usize,
     incremental_extra_symbols: usize,
+    /// Impact analysis vs. the transitive closure of the expected calls:
+    /// static mode, and default mode (adds dynamic dispatch).
+    impact_static: Accuracy,
+    impact: Accuracy,
 }
 
 #[derive(Serialize)]
@@ -331,6 +340,55 @@ fn run_fixture(dir: &Path, verbose: bool) -> Result<FixtureReport> {
         }
     }
 
+    // Impact analysis: for every function anchor, compare the transitive
+    // callers in the graph with the closure of the expected edges.
+    let mut impact = Accuracy::default();
+    let mut impact_static = Accuracy::default();
+    let callable: Vec<&Sym> = graph
+        .symbols
+        .iter()
+        .filter(|s| matches!(s.kind.as_str(), "function" | "method"))
+        .filter(|s| anchor_of(s, &anchors).is_some())
+        .collect();
+    for target in callable {
+        let tid = anchor_of(target, &anchors).unwrap().id.clone();
+        let mut truth: BTreeSet<String> = BTreeSet::new();
+        let mut frontier = vec![tid.clone()];
+        while let Some(t) = frontier.pop() {
+            for (a, b) in &expected {
+                if *b == t && truth.insert(a.clone()) {
+                    frontier.push(a.clone());
+                }
+            }
+        }
+        truth.remove(&tid);
+        let got_for = |dispatch: bool| -> Result<BTreeSet<String>> {
+            Ok(compat::impact_ids(&idx, target.id, dispatch)?
+                .into_iter()
+                .filter_map(|id| syms.get(&id))
+                .filter_map(|s| anchor_of(s, &anchors).map(|a| a.id.clone()))
+                .collect())
+        };
+        let got_static = got_for(false)?;
+        impact_static.tp += got_static.intersection(&truth).count();
+        impact_static.fp += got_static.difference(&truth).count();
+        impact_static.fn_ += truth.difference(&got_static).count();
+        let got = got_for(true)?;
+        impact.tp += got.intersection(&truth).count();
+        impact.fp += got.difference(&truth).count();
+        impact.fn_ += truth.difference(&got).count();
+        if verbose {
+            for x in got.difference(&truth) {
+                eprintln!("   impact({tid}) extra: {x}");
+            }
+            for x in truth.difference(&got) {
+                eprintln!("   impact({tid}) missing: {x}");
+            }
+        }
+    }
+    let impact = impact.finish();
+    let impact_static = impact_static.finish();
+
     // Incremental consistency
     let (inc_me, inc_xe, inc_ms, inc_xs) = incremental_check(dir)?;
 
@@ -359,6 +417,8 @@ fn run_fixture(dir: &Path, verbose: bool) -> Result<FixtureReport> {
         incremental_extra_edges: inc_xe,
         incremental_missing_symbols: inc_ms,
         incremental_extra_symbols: inc_xs,
+        impact_static,
+        impact,
     })
 }
 
@@ -487,6 +547,7 @@ fn run_search(repo: &Path, queries: &Path) -> Result<SearchReport> {
     let mut current_ranks = Vec::new();
     let mut hybrid_ranks = Vec::new();
     let mut misses = Vec::new();
+    let (mut ctx_hits, mut ctx_chars, mut file_chars, mut n_ctx) = (0usize, 0usize, 0usize, 0usize);
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -505,6 +566,20 @@ fn run_search(repo: &Path, queries: &Path) -> Result<SearchReport> {
         if cr.is_none() {
             let got: Vec<String> = current.iter().take(3).map(|(n, f)| format!("{n} ({f})")).collect();
             misses.push(format!("{q} => {name}; got {}", got.join(", ")));
+        }
+        // Context: is the target's source in a ~1500-token bundle?
+        let text = compat::context_text(&ctx, &repo, q, 6000)?;
+        let hit = text
+            .lines()
+            .any(|l| l.starts_with("// ") && l.contains(&format!("{name} - ")) && l.contains(path));
+        ctx_hits += hit as usize;
+        ctx_chars += text.len();
+        n_ctx += 1;
+        if let Some(f) = walk(&repo)
+            .ok()
+            .and_then(|fs| fs.into_iter().find(|f| norm(&f.to_string_lossy()).contains(path)))
+        {
+            file_chars += std::fs::metadata(f).map(|m| m.len() as usize).unwrap_or(0);
         }
         legacy_ranks.push(lr);
         current_ranks.push(cr);
@@ -529,6 +604,9 @@ fn run_search(repo: &Path, queries: &Path) -> Result<SearchReport> {
         current: score(&current_ranks),
         hybrid: if hybrid_ranks.is_empty() { None } else { Some(score(&hybrid_ranks)) },
         misses,
+        context_hit_rate: ctx_hits as f64 / n_ctx.max(1) as f64,
+        context_avg_chars: ctx_chars / n_ctx.max(1),
+        whole_file_avg_chars: file_chars / n_ctx.max(1),
     })
 }
 
@@ -571,6 +649,26 @@ fn print_markdown(r: &Report) {
             row(&format!("**{group}**"), &acc, " | | ".to_string());
         }
     }
+    println!("\n## Impact analysis (transitive callers vs ground truth)\n");
+    println!("| fixture | static P | static R | +dispatch P | +dispatch R |");
+    println!("|---|---|---|---|---|");
+    let (mut st, mut dy) = (Accuracy::default(), Accuracy::default());
+    for f in &r.fixtures {
+        println!(
+            "| {} | {:.2} | {:.2} | {:.2} | {:.2} |",
+            f.name, f.impact_static.precision, f.impact_static.recall, f.impact.precision, f.impact.recall
+        );
+        for (acc, a) in [(&mut st, &f.impact_static), (&mut dy, &f.impact)] {
+            acc.tp += a.tp;
+            acc.fp += a.fp;
+            acc.fn_ += a.fn_;
+        }
+    }
+    let (st, dy) = (st.finish(), dy.finish());
+    println!(
+        "| **all** | {:.2} | {:.2} | {:.2} | {:.2} |",
+        st.precision, st.recall, dy.precision, dy.recall
+    );
     for group in ["design", "holdout", "all"] {
         if let Some(a) = r.overall.get(&format!("{group}@1")) {
             println!("\n{group} @1: TP {} FP {} FN {}", a.tp, a.fp, a.fn_);
@@ -591,6 +689,12 @@ fn print_markdown(r: &Report) {
                 x.recall_at_1, x.recall_at_5, x.recall_at_10, x.mrr
             );
         }
+        println!(
+            "\nContext bundle: target source included for {:.0}% of queries; avg {} chars (whole target file avg {} chars)",
+            s.context_hit_rate * 100.0,
+            s.context_avg_chars,
+            s.whole_file_avg_chars
+        );
         for m in &s.misses {
             println!("- miss: {m}");
         }

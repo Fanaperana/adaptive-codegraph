@@ -34,12 +34,27 @@ A similar implementation to [mie-codegraph](https://github.com/mieweb/mie-codegr
 
 | Component | Status |
 |-----------|--------|
-| Core library (extract, store, search, embed) | ✅ Complete |
-| CLI (index, search, callers, callees, neighborhood) | ✅ Complete |
-| MCP server (JSON-RPC 2.0 over stdio, 8 tools) | ✅ Complete |
-| Built-in grammars (C, JS, Rust, Python, TypeScript, Go) | ✅ Complete |
-| Fastembed semantic search | ✅ Default (opt-out with `--no-default-features`) |
-| Daemon (file-watching incremental reindex) | 🔨 Skeleton |
+| Core library (extract, resolve, store, search, embed, insight) | ✅ Complete |
+| Scope- and type-aware call resolution (imports, `self`, inheritance, interfaces) | ✅ Complete |
+| CLI (search, explain, source, callers, impact, context, map, outline, path, dead-code) | ✅ Complete |
+| MCP server (JSON-RPC 2.0 over stdio, 14 tools, auto-refreshing index) | ✅ Complete |
+| Claude Code plugin (`plugin/`: MCP server, session-start map, skill, commands) | ✅ Complete |
+| Built-in grammars (C, JS, Rust, Python, TypeScript, TSX, Go) | ✅ Complete |
+| Hybrid search (BM25 + fastembed vectors) | ✅ Default (opt-out with `--no-default-features`) |
+| Daemon (file-watching incremental reindex) | ✅ Complete |
+| Benchmark (`acg-bench`: ground-truth fixtures, search, impact, scale) | ✅ Complete |
+
+### Measured accuracy
+
+From `acg-bench` (see [bench/RESULTS.md](bench/RESULTS.md)):
+
+| | Before | Now |
+|---|---|---|
+| Call edges, all fixtures (precision / recall) | 0.45 / 0.43 | **1.00 / 0.98** |
+| Call edges, held-out fixtures | ~0.22 / ~0.24 | **1.00 / 0.94** |
+| Impact analysis (static, precision / recall) | — | **1.00 / 0.97** |
+| Search MRR, 24 natural-language queries on ast-grep | 0.32 | **0.56** lexical, **0.78** hybrid |
+| Neighborhood answer size on vscode (avg) | 500 KB | **~9 KB** |
 
 ## � How It Works Under the Hood
 
@@ -266,20 +281,47 @@ let pattern = RegexEdgePattern {
 
 ## 🛠️ MCP Tools
 
-The MCP server exposes these tools over JSON-RPC 2.0 (stdio):
+The MCP server exposes these tools over JSON-RPC 2.0 (stdio). Every tool
+answers in compact text, accepts symbols by name (`save`, `Store::save`,
+`Store.save`, `src/store.rs::Store::save`) or ID, and works on a fresh index:
+the index is built on first use and changed files are re-indexed before
+answering.
 
-| Tool | Description |
-|------|-------------|
-| `search` | BM25 full-text search over symbols |
-| `semantic_search` | Vector similarity search (fastembed) |
-| `find_symbol` | Look up symbol by name substring |
-| `get_symbol` | Get symbol details by ID |
-| `find_callers` | Functions that call a given symbol |
-| `find_callees` | Functions called by a given symbol |
-| `expand_neighborhood` | BFS subgraph around a symbol |
-| `index` | Full index rebuild |
-| `incremental_index` | Re-process only changed files (git-aware) |
-| `index_status` | Report index state and staleness |
+| Tool | What it answers |
+|------|-----------------|
+| `search` | Find symbols by name or description (hybrid lexical + semantic ranking) |
+| `context` | The most relevant code for a task, in one budgeted bundle |
+| `explain` | Everything about a symbol: signature, doc, members, callers, callees, supertypes, implementations |
+| `source` | A symbol's source with line numbers |
+| `callers` / `callees` | Call sites (transitive with `depth`) / what a symbol calls |
+| `impact` | What may break if a symbol changes, and which tests to run |
+| `repo_map` | PageRank-ranked overview of the most depended-on code |
+| `outline` | All symbols of a file, nested |
+| `call_path` | Shortest dependency chain from one symbol to another |
+| `dead_code` | Functions/methods nothing uses |
+| `neighborhood` | Symbols and edges within N hops |
+| `reindex` / `index_status` | Force a re-index / index health and resolution stats |
+
+The original tool names (`find_symbol`, `get_symbol`, `find_callers`,
+`find_callees`, `expand_neighborhood`, `semantic_search`, `index`,
+`incremental_index`) are still accepted.
+
+### Claude Code plugin
+
+`plugin/` packages everything for Claude Code: the MCP server, a session-start
+hook that injects a short repo map, a skill that tells Claude when to use the
+graph instead of grep, and `/impact`, `/codemap`, `/explain` commands.
+
+```bash
+./install.sh                     # puts adaptive-codegraph{,-mcp,-daemon} on PATH
+```
+
+Then in Claude Code:
+
+```
+/plugin marketplace add Fanaperana/adaptive-codegraph
+/plugin install adaptive-codegraph@adaptive-codegraph
+```
 
 ### VS Code / Copilot Configuration
 
@@ -304,17 +346,31 @@ Add a `.vscode/mcp.json` to your project:
 ```bash
 # cd into any project, then:
 
-# Full index
+# Full index (any command builds/refreshes the index on demand)
 adaptive-codegraph index
 
-# Search symbols
-adaptive-codegraph search "parse_config"
+# Search by name or description
+adaptive-codegraph search "parse the config file"
 
-# Find callers of a function
-adaptive-codegraph callers "handle_request"
+# Everything about a symbol / its source
+adaptive-codegraph explain Store::save
+adaptive-codegraph source Store::save
 
-# Find callees
-adaptive-codegraph callees "main"
+# Callers (transitive with --depth), callees
+adaptive-codegraph callers handle_request --depth 3
+adaptive-codegraph callees main
+
+# What breaks if this changes, and which tests to run
+adaptive-codegraph impact normalize_type
+
+# Relevant code for a task, ~2000 tokens
+adaptive-codegraph context "add retry to the http client" --budget 2000
+
+# Ranked map of the repo, file outline, dependency path, unused code
+adaptive-codegraph map --budget 1500
+adaptive-codegraph outline src/store.rs
+adaptive-codegraph path main normalize_type
+adaptive-codegraph dead-code --path src/
 
 # BFS neighborhood (depth 3)
 adaptive-codegraph neighborhood "main" --depth 3

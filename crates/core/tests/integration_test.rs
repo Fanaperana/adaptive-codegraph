@@ -610,3 +610,16 @@ fn all_bundled_languages_load() {
         vec!["c", "go", "javascript", "python", "rust", "tsx", "typescript"]
     );
 }
+
+/// Without a `languages/` folder the built-in definitions are used.
+#[test]
+fn embedded_languages_load() {
+    let registry = adaptive_codegraph_core::lang::build_embedded_registry().unwrap();
+    let mut langs = registry.languages();
+    langs.sort();
+    assert_eq!(
+        langs,
+        vec!["c", "go", "javascript", "python", "rust", "tsx", "typescript"]
+    );
+    assert!(registry.for_extension("tsx").is_some());
+}

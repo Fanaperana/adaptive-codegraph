@@ -1,0 +1,11 @@
+{
+  "name": "adaptive-codegraph",
+  "owner": { "name": "Fanaperana" },
+  "plugins": [
+    {
+      "name": "adaptive-codegraph",
+      "source": "./plugin",
+      "description": "Code graph for Claude: call graph, impact analysis, repo map and code-aware search, kept fresh as files change."
+    }
+  ]
+}
