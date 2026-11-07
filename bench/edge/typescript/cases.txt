@@ -1,0 +1,8 @@
+# case | symbol for codegraph | name for grep / ast-grep | expected callers (@def ids, comma separated)
+method called through a typed private field (this.repo.save) | src/repo.ts::Repo::save | save | Service::persist
+same method name on another class | src/repo.ts::Queue::save | save | enqueue
+import through a re-export (index.ts), name in comment and string | src/util.ts::checksum | checksum | viaReexport
+optional-chaining call (this.cache?.get) | src/repo.ts::Cache::get | get | Service::lookup
+arrow function assigned to a const | src/util.ts::parse | parse | arrowUser
+default export imported under another name | src/util.ts::calc | calc | defaultAlias
+class instantiated with new | src/repo.ts::Repo | Repo | Service::constructor

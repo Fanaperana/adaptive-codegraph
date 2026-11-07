@@ -1,0 +1,963 @@
+{
+ "callers": [
+  {
+   "lang": "python",
+   "case": "method called through a typed field (self.store.save)",
+   "expected": [
+    "Service::persist"
+   ],
+   "ripgrep": {
+    "found": [
+     "Cache::save",
+     "Service::persist",
+     "Store::save",
+     "same_name_other_type"
+    ],
+    "precision": 0.25,
+    "recall": 1.0,
+    "bytes": 197,
+    "calls": 1
+   },
+   "ast-grep": {
+    "found": [
+     "Service::persist",
+     "same_name_other_type"
+    ],
+    "precision": 0.5,
+    "recall": 1.0,
+    "bytes": 71,
+    "calls": 2
+   },
+   "adaptive-codegraph": {
+    "found": [
+     "Service::persist"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 80,
+    "calls": 1
+   },
+   "possible": []
+  },
+  {
+   "lang": "python",
+   "case": "same method name on another type",
+   "expected": [
+    "same_name_other_type"
+   ],
+   "ripgrep": {
+    "found": [
+     "Cache::save",
+     "Service::persist",
+     "Store::save",
+     "same_name_other_type"
+    ],
+    "precision": 0.25,
+    "recall": 1.0,
+    "bytes": 197,
+    "calls": 1
+   },
+   "ast-grep": {
+    "found": [
+     "Service::persist",
+     "same_name_other_type"
+    ],
+    "precision": 0.5,
+    "recall": 1.0,
+    "bytes": 71,
+    "calls": 2
+   },
+   "adaptive-codegraph": {
+    "found": [
+     "same_name_other_type"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 84,
+    "calls": 1
+   },
+   "possible": []
+  },
+  {
+   "lang": "python",
+   "case": "aliased import, module call, name in comment and string",
+   "expected": [
+    "alias_call",
+    "module_call"
+   ],
+   "ripgrep": {
+    "found": [
+     "<app/main.py>",
+     "checksum",
+     "mentions_only",
+     "module_call"
+    ],
+    "precision": 0.25,
+    "recall": 0.5,
+    "bytes": 269,
+    "calls": 1
+   },
+   "ast-grep": {
+    "found": [
+     "module_call"
+    ],
+    "precision": 1.0,
+    "recall": 0.5,
+    "bytes": 45,
+    "calls": 2
+   },
+   "adaptive-codegraph": {
+    "found": [
+     "alias_call",
+     "module_call"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 100,
+    "calls": 1
+   },
+   "possible": []
+  },
+  {
+   "lang": "python",
+   "case": "local variable shadows the function; passed as a callback",
+   "expected": [
+    "callback_use"
+   ],
+   "ripgrep": {
+    "found": [
+     "<app/main.py>",
+     "callback_use",
+     "format_name",
+     "shadowed"
+    ],
+    "precision": 0.25,
+    "recall": 1.0,
+    "bytes": 268,
+    "calls": 1
+   },
+   "ast-grep": {
+    "found": [
+     "shadowed"
+    ],
+    "precision": 0.0,
+    "recall": 0.0,
+    "bytes": 43,
+    "calls": 2
+   },
+   "adaptive-codegraph": {
+    "found": [
+     "callback_use"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 95,
+    "calls": 1
+   },
+   "possible": []
+  },
+  {
+   "lang": "python",
+   "case": "super() call to the base method",
+   "expected": [
+    "Child::load"
+   ],
+   "ripgrep": {
+    "found": [
+     "Base::load",
+     "Child::load",
+     "via_subclass"
+    ],
+    "precision": 0.3333333333333333,
+    "recall": 1.0,
+    "bytes": 213,
+    "calls": 1
+   },
+   "ast-grep": {
+    "found": [
+     "Child::load",
+     "via_subclass"
+    ],
+    "precision": 0.5,
+    "recall": 1.0,
+    "bytes": 92,
+    "calls": 2
+   },
+   "adaptive-codegraph": {
+    "found": [
+     "Child::load"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 77,
+    "calls": 1
+   },
+   "possible": []
+  },
+  {
+   "lang": "python",
+   "case": "subclass method called on a new instance",
+   "expected": [
+    "via_subclass"
+   ],
+   "ripgrep": {
+    "found": [
+     "Base::load",
+     "Child::load",
+     "via_subclass"
+    ],
+    "precision": 0.3333333333333333,
+    "recall": 1.0,
+    "bytes": 213,
+    "calls": 1
+   },
+   "ast-grep": {
+    "found": [
+     "Child::load",
+     "via_subclass"
+    ],
+    "precision": 0.5,
+    "recall": 1.0,
+    "bytes": 92,
+    "calls": 2
+   },
+   "adaptive-codegraph": {
+    "found": [
+     "via_subclass"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 77,
+    "calls": 1
+   },
+   "possible": []
+  },
+  {
+   "lang": "rust",
+   "case": "same associated function name on two types (Store::new vs Cache::new)",
+   "expected": [
+    "build"
+   ],
+   "ripgrep": {
+    "found": [
+     "Cache::new",
+     "Store::new",
+     "build",
+     "make_cache"
+    ],
+    "precision": 0.25,
+    "recall": 1.0,
+    "bytes": 259,
+    "calls": 1
+   },
+   "ast-grep": {
+    "found": [
+     "Store::new",
+     "build",
+     "make_cache"
+    ],
+    "precision": 0.3333333333333333,
+    "recall": 1.0,
+    "bytes": 126,
+    "calls": 3
+   },
+   "adaptive-codegraph": {
+    "found": [
+     "build"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 66,
+    "calls": 1
+   },
+   "possible": []
+  },
+  {
+   "lang": "rust",
+   "case": "chained method calls (s.save(1).save(2)), name in a string",
+   "expected": [
+    "build"
+   ],
+   "ripgrep": {
+    "found": [
+     "Store::save",
+     "build",
+     "mentions"
+    ],
+    "precision": 0.3333333333333333,
+    "recall": 1.0,
+    "bytes": 210,
+    "calls": 1
+   },
+   "ast-grep": {
+    "found": [
+     "build"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 37,
+    "calls": 3
+   },
+   "adaptive-codegraph": {
+    "found": [
+     "build"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 72,
+    "calls": 1
+   },
+   "possible": []
+  },
+  {
+   "lang": "rust",
+   "case": "call through Self:: inside the impl",
+   "expected": [
+    "Store::flush"
+   ],
+   "ripgrep": {
+    "found": [
+     "Store::flush",
+     "Store::reset"
+    ],
+    "precision": 0.5,
+    "recall": 1.0,
+    "bytes": 114,
+    "calls": 1
+   },
+   "ast-grep": {
+    "found": [
+     "Store::flush"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 43,
+    "calls": 3
+   },
+   "adaptive-codegraph": {
+    "found": [
+     "Store::flush"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 78,
+    "calls": 1
+   },
+   "possible": []
+  },
+  {
+   "lang": "rust",
+   "case": "call inside a macro argument (println!)",
+   "expected": [
+    "in_macro"
+   ],
+   "ripgrep": {
+    "found": [
+     "compute",
+     "in_macro",
+     "mentions"
+    ],
+    "precision": 0.3333333333333333,
+    "recall": 1.0,
+    "bytes": 268,
+    "calls": 1
+   },
+   "ast-grep": {
+    "found": [],
+    "precision": 0.0,
+    "recall": 0.0,
+    "bytes": 0,
+    "calls": 3
+   },
+   "adaptive-codegraph": {
+    "found": [
+     "in_macro"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 66,
+    "calls": 1
+   },
+   "possible": []
+  },
+  {
+   "lang": "rust",
+   "case": "aliased use, called inside a closure",
+   "expected": [
+    "in_closure"
+   ],
+   "ripgrep": {
+    "found": [
+     "<src/main.rs>",
+     "checksum",
+     "mentions"
+    ],
+    "precision": 0.0,
+    "recall": 0.0,
+    "bytes": 263,
+    "calls": 1
+   },
+   "ast-grep": {
+    "found": [],
+    "precision": 0.0,
+    "recall": 0.0,
+    "bytes": 0,
+    "calls": 3
+   },
+   "adaptive-codegraph": {
+    "found": [
+     "in_closure"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 69,
+    "calls": 1
+   },
+   "possible": []
+  },
+  {
+   "lang": "typescript",
+   "case": "method called through a typed private field (this.repo.save)",
+   "expected": [
+    "Service::persist"
+   ],
+   "ripgrep": {
+    "found": [
+     "Queue::save",
+     "Repo::save",
+     "Service::persist",
+     "describe",
+     "enqueue"
+    ],
+    "precision": 0.2,
+    "recall": 1.0,
+    "bytes": 283,
+    "calls": 1
+   },
+   "ast-grep": {
+    "found": [
+     "Service::persist",
+     "enqueue"
+    ],
+    "precision": 0.5,
+    "recall": 1.0,
+    "bytes": 80,
+    "calls": 3
+   },
+   "adaptive-codegraph": {
+    "found": [
+     "Service::persist"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 77,
+    "calls": 1
+   },
+   "possible": []
+  },
+  {
+   "lang": "typescript",
+   "case": "same method name on another class",
+   "expected": [
+    "enqueue"
+   ],
+   "ripgrep": {
+    "found": [
+     "Queue::save",
+     "Repo::save",
+     "Service::persist",
+     "describe",
+     "enqueue"
+    ],
+    "precision": 0.2,
+    "recall": 1.0,
+    "bytes": 283,
+    "calls": 1
+   },
+   "ast-grep": {
+    "found": [
+     "Service::persist",
+     "enqueue"
+    ],
+    "precision": 0.5,
+    "recall": 1.0,
+    "bytes": 80,
+    "calls": 3
+   },
+   "adaptive-codegraph": {
+    "found": [
+     "enqueue"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 69,
+    "calls": 1
+   },
+   "possible": []
+  },
+  {
+   "lang": "typescript",
+   "case": "import through a re-export (index.ts), name in comment and string",
+   "expected": [
+    "viaReexport"
+   ],
+   "ripgrep": {
+    "found": [
+     "<src/index.ts>",
+     "<src/main.ts>",
+     "checksum",
+     "describe",
+     "viaReexport"
+    ],
+    "precision": 0.2,
+    "recall": 1.0,
+    "bytes": 354,
+    "calls": 1
+   },
+   "ast-grep": {
+    "found": [
+     "viaReexport"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 45,
+    "calls": 3
+   },
+   "adaptive-codegraph": {
+    "found": [
+     "viaReexport"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 70,
+    "calls": 1
+   },
+   "possible": []
+  },
+  {
+   "lang": "typescript",
+   "case": "optional-chaining call (this.cache?.get)",
+   "expected": [
+    "Service::lookup"
+   ],
+   "ripgrep": {
+    "found": [
+     "Cache::get",
+     "Service::lookup"
+    ],
+    "precision": 0.5,
+    "recall": 1.0,
+    "bytes": 113,
+    "calls": 1
+   },
+   "ast-grep": {
+    "found": [],
+    "precision": 0.0,
+    "recall": 0.0,
+    "bytes": 0,
+    "calls": 3
+   },
+   "adaptive-codegraph": {
+    "found": [
+     "Service::lookup"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 77,
+    "calls": 1
+   },
+   "possible": []
+  },
+  {
+   "lang": "typescript",
+   "case": "arrow function assigned to a const",
+   "expected": [
+    "arrowUser"
+   ],
+   "ripgrep": {
+    "found": [
+     "<src/main.ts>",
+     "arrowUser",
+     "parse"
+    ],
+    "precision": 0.3333333333333333,
+    "recall": 1.0,
+    "bytes": 172,
+    "calls": 1
+   },
+   "ast-grep": {
+    "found": [
+     "arrowUser"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 37,
+    "calls": 3
+   },
+   "adaptive-codegraph": {
+    "found": [
+     "arrowUser"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 65,
+    "calls": 1
+   },
+   "possible": []
+  },
+  {
+   "lang": "typescript",
+   "case": "default export imported under another name",
+   "expected": [
+    "defaultAlias"
+   ],
+   "ripgrep": {
+    "found": [
+     "calc"
+    ],
+    "precision": 0.0,
+    "recall": 0.0,
+    "bytes": 79,
+    "calls": 1
+   },
+   "ast-grep": {
+    "found": [],
+    "precision": 0.0,
+    "recall": 0.0,
+    "bytes": 0,
+    "calls": 3
+   },
+   "adaptive-codegraph": {
+    "found": [
+     "defaultAlias"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 67,
+    "calls": 1
+   },
+   "possible": []
+  },
+  {
+   "lang": "typescript",
+   "case": "class instantiated with new",
+   "expected": [
+    "Service::constructor"
+   ],
+   "ripgrep": {
+    "found": [
+     "<src/main.ts>",
+     "Repo",
+     "Repo::save",
+     "Service",
+     "Service::constructor",
+     "describe"
+    ],
+    "precision": 0.16666666666666666,
+    "recall": 1.0,
+    "bytes": 328,
+    "calls": 1
+   },
+   "ast-grep": {
+    "found": [
+     "Service::constructor"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 43,
+    "calls": 3
+   },
+   "adaptive-codegraph": {
+    "found": [
+     "Service::constructor"
+    ],
+    "precision": 1.0,
+    "recall": 1.0,
+    "bytes": 75,
+    "calls": 1
+   },
+   "possible": []
+  }
+ ],
+ "text": [
+  {
+   "case": "Unicode literal",
+   "pattern": "naïve",
+   "rg": [
+    [
+     "unicode.txt",
+     1
+    ]
+   ],
+   "codegraph": [
+    [
+     "unicode.txt",
+     1
+    ]
+   ],
+   "same": true
+  },
+  {
+   "case": "Unicode, ignore case",
+   "pattern": "CAFÉ",
+   "rg": [
+    [
+     "unicode.txt",
+     1
+    ],
+    [
+     "unicode.txt",
+     2
+    ]
+   ],
+   "codegraph": [
+    [
+     "unicode.txt",
+     1
+    ],
+    [
+     "unicode.txt",
+     2
+    ]
+   ],
+   "same": true
+  },
+  {
+   "case": "Unicode, ignore case (ß)",
+   "pattern": "STRASSE",
+   "rg": [],
+   "codegraph": [],
+   "same": true
+  },
+  {
+   "case": "CRLF line endings",
+   "pattern": "target line$",
+   "rg": [],
+   "codegraph": [],
+   "same": true
+  },
+  {
+   "case": "UTF-8 BOM, anchored ^",
+   "pattern": "^import",
+   "rg": [
+    [
+     "bom.py",
+     1
+    ],
+    [
+     "bom.py",
+     2
+    ]
+   ],
+   "codegraph": [
+    [
+     "bom.py",
+     1
+    ],
+    [
+     "bom.py",
+     2
+    ]
+   ],
+   "same": true
+  },
+  {
+   "case": "UTF-16 file",
+   "pattern": "utf16 target",
+   "rg": [
+    [
+     "utf16.txt",
+     1
+    ]
+   ],
+   "codegraph": [
+    [
+     "utf16.txt",
+     1
+    ]
+   ],
+   "same": true
+  },
+  {
+   "case": "200 KB line",
+   "pattern": "long_line_target",
+   "rg": [
+    [
+     "long.txt",
+     1
+    ]
+   ],
+   "codegraph": [
+    [
+     "long.txt",
+     1
+    ]
+   ],
+   "same": true
+  },
+  {
+   "case": "file over 4 MB",
+   "pattern": "needle_in_big_file",
+   "rg": [
+    [
+     "big.log",
+     160001
+    ]
+   ],
+   "codegraph": [
+    [
+     "big.log",
+     160001
+    ]
+   ],
+   "same": true
+  },
+  {
+   "case": "binary file",
+   "pattern": "binary_target",
+   "rg": [],
+   "codegraph": [],
+   "same": true
+  },
+  {
+   "case": ".gitignore'd file",
+   "pattern": "ignored_target",
+   "rg": [],
+   "codegraph": [],
+   "same": true
+  },
+  {
+   "case": "hidden file",
+   "pattern": "hidden_target",
+   "rg": [],
+   "codegraph": [],
+   "same": true
+  },
+  {
+   "case": "regex, no literal",
+   "pattern": "\\b\\d{3}-\\d{4}\\b",
+   "rg": [
+    [
+     "phone.txt",
+     1
+    ]
+   ],
+   "codegraph": [
+    [
+     "phone.txt",
+     1
+    ]
+   ],
+   "same": true
+  },
+  {
+   "case": "alternation",
+   "pattern": "first|last_line",
+   "rg": [
+    [
+     "crlf.txt",
+     1
+    ],
+    [
+     "no_newline.txt",
+     1
+    ],
+    [
+     "no_newline.txt",
+     2
+    ]
+   ],
+   "codegraph": [
+    [
+     "crlf.txt",
+     1
+    ],
+    [
+     "no_newline.txt",
+     1
+    ],
+    [
+     "no_newline.txt",
+     2
+    ]
+   ],
+   "same": true
+  },
+  {
+   "case": "whole word vs run_all, _run",
+   "pattern": "run",
+   "rg": [
+    [
+     "words.py",
+     1
+    ]
+   ],
+   "codegraph": [
+    [
+     "words.py",
+     1
+    ]
+   ],
+   "same": true
+  },
+  {
+   "case": "empty lines ^$",
+   "pattern": "^$",
+   "rg": [
+    [
+     "empty_lines.txt",
+     2
+    ],
+    [
+     "empty_lines.txt",
+     3
+    ]
+   ],
+   "codegraph": [
+    [
+     "empty_lines.txt",
+     2
+    ],
+    [
+     "empty_lines.txt",
+     3
+    ]
+   ],
+   "same": true
+  },
+  {
+   "case": "last line, no newline",
+   "pattern": "last_line_target$",
+   "rg": [
+    [
+     "no_newline.txt",
+     2
+    ]
+   ],
+   "codegraph": [
+    [
+     "no_newline.txt",
+     2
+    ]
+   ],
+   "same": true
+  },
+  {
+   "case": "invalid UTF-8 (Latin-1)",
+   "pattern": "latin1_target",
+   "rg": [
+    [
+     "latin1.txt",
+     1
+    ]
+   ],
+   "codegraph": [
+    [
+     "latin1.txt",
+     1
+    ]
+   ],
+   "same": true
+  }
+ ]
+}

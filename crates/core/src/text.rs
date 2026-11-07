@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 /// Larger files are searched from disk instead of memory.
 pub const MAX_IN_MEMORY: u64 = 4_000_000;
 /// Longest line text kept in a hit.
@@ -147,12 +147,12 @@ impl TextIndex {
                 let d = &disk[i];
                 let large = d.size > max;
                 let bytes = if large { read_head(&d.abs, 8192) } else { std::fs::read(&d.abs).unwrap_or_default() };
-                let binary = bytes.iter().take(8192).any(|&b| b == 0);
+                let binary = is_binary(&bytes);
                 let (content, tris) = if binary || large {
                     (String::new(), Vec::new())
                 } else {
-                    let tris = trigrams(&bytes);
-                    (String::from_utf8_lossy(&bytes).into_owned(), tris)
+                    let text = decode(&bytes);
+                    (text.clone(), trigrams(text.as_bytes()))
                 };
                 (i, TextFile { path: d.rel.clone(), mtime: d.mtime, size: d.size, binary, large, content, tris })
             })
@@ -217,7 +217,7 @@ impl TextIndex {
                 let f = &self.files[i as usize];
                 let hits = if f.large {
                     let bytes = std::fs::read(self.base.join(&f.path)).ok()?;
-                    match_lines(&re, &f.path, &String::from_utf8_lossy(&bytes))
+                    match_lines(&re, &f.path, &decode(&bytes))
                 } else {
                     match_lines(&re, &f.path, &f.content)
                 };
@@ -280,6 +280,10 @@ fn match_lines(re: &regex::Regex, path: &str, content: &str) -> Vec<TextHit> {
         if m.start() < last_line_end && !out.is_empty() {
             continue; // same line as the previous hit
         }
+        // The empty position after a final newline is not a line (as in ripgrep).
+        if m.start() == bytes.len() && (bytes.is_empty() || bytes.ends_with(b"\n")) {
+            break;
+        }
         line_no += bytes[scanned..m.start()].iter().filter(|&&b| b == b'\n').count() as u32;
         scanned = m.start();
         let start = bytes[..m.start()].iter().rposition(|&b| b == b'\n').map(|p| p + 1).unwrap_or(0);
@@ -325,6 +329,30 @@ impl PathFilter {
             return g.is_match(path);
         }
         true
+    }
+}
+
+/// UTF-16 text starts with a byte-order mark; anything else with a NUL byte
+/// in its first 8 KB is binary (ripgrep's rule).
+fn is_binary(bytes: &[u8]) -> bool {
+    !bytes.starts_with(&[0xFF, 0xFE]) && !bytes.starts_with(&[0xFE, 0xFF]) && bytes.iter().take(8192).any(|&b| b == 0)
+}
+
+/// File bytes as text: a UTF-8 byte-order mark is dropped, UTF-16 (with a
+/// byte-order mark) is converted, invalid UTF-8 is replaced.
+fn decode(bytes: &[u8]) -> String {
+    let utf16 = |be: bool| {
+        let units = bytes[2..].chunks_exact(2).map(|c| if be { u16::from_be_bytes([c[0], c[1]]) } else { u16::from_le_bytes([c[0], c[1]]) });
+        char::decode_utf16(units).map(|c| c.unwrap_or('\u{FFFD}')).collect()
+    };
+    if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        String::from_utf8_lossy(rest).into_owned()
+    } else if bytes.starts_with(&[0xFF, 0xFE]) {
+        utf16(false)
+    } else if bytes.starts_with(&[0xFE, 0xFF]) {
+        utf16(true)
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
     }
 }
 
@@ -546,6 +574,23 @@ mod tests {
         // Reloaded from disk, the index gives the same answer.
         let t2 = TextIndex::load(&idx_dir);
         assert_eq!(t2.search(&q).unwrap().hits.len(), 1);
+    }
+
+    #[test]
+    fn encodings_and_line_ends_match_ripgrep() {
+        let mut bom = vec![0xEF, 0xBB, 0xBF];
+        bom.extend_from_slice(b"import os\nimport sys\n");
+        let mut utf16 = vec![0xFF, 0xFE];
+        for u in "utf16 target\n".encode_utf16() {
+            utf16.extend_from_slice(&u.to_le_bytes());
+        }
+        assert!(!is_binary(&utf16));
+        assert_eq!(decode(&utf16), "utf16 target\n");
+        let t = index(&[("bom.py", &decode(&bom)), ("e.txt", "a\n\n\nb\n")]);
+        let q = |p: &str| TextQuery { pattern: p.into(), ..Default::default() };
+        assert_eq!(t.search(&q("^import")).unwrap().hits.len(), 2, "BOM does not hide line 1");
+        let lines: Vec<u32> = t.search(&q("^$")).unwrap().hits.iter().filter(|h| h.file == "e.txt").map(|h| h.line).collect();
+        assert_eq!(lines, [2, 3], "no phantom line after the final newline");
     }
 
     #[test]

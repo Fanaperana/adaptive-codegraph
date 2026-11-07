@@ -414,14 +414,15 @@ impl Workspace {
         let mut callers: Vec<CallSite> = store
             .edges_in(&id)
             .into_iter()
-            .filter(|(x, e)| matches!(e.kind.as_str(), "calls" | "renders") && x.kind != "file")
+            .filter(|(x, e)| matches!(e.kind.as_str(), "calls" | "renders" | "callback") && x.kind != "file")
             .map(|(x, e)| CallSite {
                 caller: SymbolRef::of(x),
                 line: e.line + 1,
                 count: e.count,
-                confidence: match e.confidence {
-                    3 => "certain",
-                    2 => "inferred",
+                confidence: match (e.kind.as_str(), e.confidence) {
+                    ("callback", _) => "passed as a value",
+                    (_, 3) => "certain",
+                    (_, 2) => "inferred",
                     _ => "guess",
                 },
             })
@@ -707,7 +708,11 @@ fn format_callers(r: &CallersResult, show_possible: bool) -> String {
     } else {
         let _ = writeln!(out, "{} callers of {} ({}:{}):", r.callers.len(), t.name, t.file, t.line);
         for c in &r.callers {
-            let q = if c.confidence != "certain" { "  (inferred)" } else { "" };
+            let q = match c.confidence {
+                "certain" => "",
+                "passed as a value" => "  (passed as a value)",
+                _ => "  (inferred)",
+            };
             let n = if c.count > 1 { format!(" ×{}", c.count) } else { String::new() };
             let _ = writeln!(out, "  {} - {}:{}{n}{q}", c.caller.name, c.caller.file, c.line);
         }

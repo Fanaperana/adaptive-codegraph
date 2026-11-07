@@ -1,0 +1,7 @@
+# case | symbol for codegraph | name for grep / ast-grep | expected callers (@def ids, comma separated)
+method called through a typed field (self.store.save) | app/models.py::Store::save | save | Service::persist
+same method name on another type | app/models.py::Cache::save | save | same_name_other_type
+aliased import, module call, name in comment and string | app/util.py::checksum | checksum | alias_call, module_call
+local variable shadows the function; passed as a callback | app/util.py::format_name | format_name | callback_use
+super() call to the base method | app/models.py::Base::load | load | Child::load
+subclass method called on a new instance | app/models.py::Child::load | load | via_subclass

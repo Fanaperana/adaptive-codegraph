@@ -374,6 +374,10 @@ impl<'a> Resolver<'a> {
                 self.resolve_ref(fi, r)
             };
             match t {
+                // A name passed as a value is a callback only when it surely
+                // names a project function (not a same-named local).
+                Target::Sym(_, conf) if r.kind == "callback" && conf < confidence::CERTAIN => {}
+                Target::Sym(to, _) if r.kind == "callback" && !self.sym(to).is_some_and(|s| matches!(s.kind.as_str(), "function" | "method")) => {}
                 Target::Sym(to, conf) => {
                     stats.resolved[conf as usize] += 1;
                     out.push((r.from, to, r.kind.clone(), conf, r.line));
@@ -569,6 +573,14 @@ impl<'a> Resolver<'a> {
                 if let Some(k) = kids.iter().find(|k| self.sym(**k).map(|s| self.acceptable(s, tk)).unwrap_or(false)) {
                     return Target::Sym(*k, confidence::CERTAIN);
                 }
+            }
+        }
+
+        // A local variable or parameter in an enclosing function with this
+        // name shadows imports and top-level functions: it is a value.
+        for anc in self.ancestors(from) {
+            if matches!(anc.kind.as_str(), "function" | "method") && self.bindings.contains_key(&(anc.id, name)) {
+                return Target::External;
             }
         }
 
@@ -791,6 +803,13 @@ impl<'a> Resolver<'a> {
             return RecvType::Unknown;
         }
 
+        // A call or constructor as the receiver: `Child()`, `new Repo()`,
+        // `Store::new()`: the type it returns or builds.
+        if let Some(callee) = call_callee(e) {
+            let b = Binding { scope: from, name: String::new(), type_name: None, call: Some(callee.to_string()), iter: None };
+            return self.type_of_binding(fi, &b, depth + 1);
+        }
+
         // `a.b` (field access): resolve `a`, then the declared type of field `b`.
         if let Some((head, field)) = e.rsplit_once('.') {
             if is_ident(field) && !head.contains(['(', '[']) || head.starts_with("super(") {
@@ -1006,6 +1025,16 @@ impl<'a> Resolver<'a> {
             return if files.is_empty() { ImportTarget::External } else { ImportTarget::Module(files) };
         };
         if !files.is_empty() {
+            if item == "default" {
+                // The module's `export default` symbol; else a top-level
+                // symbol with the local name (`export default Foo` at the end).
+                if let Some(id) = self.default_export(&files) {
+                    return ImportTarget::Symbol(id);
+                }
+                if let Some(t) = self.find_exported(&files, &imp.local, depth) {
+                    return t;
+                }
+            }
             if let Some(t) = self.find_exported(&files, item, depth) {
                 return t;
             }
@@ -1021,6 +1050,18 @@ impl<'a> Resolver<'a> {
         } else {
             ImportTarget::Unknown
         }
+    }
+
+    /// The symbol declared with `export default` in `files`.
+    fn default_export(&self, files: &[usize]) -> Option<SymbolId> {
+        files.iter().find_map(|&f| {
+            self.files[f]
+                .facts
+                .symbols
+                .iter()
+                .find(|s| s.signature.as_deref().is_some_and(|sig| sig.trim_start().starts_with("export default")))
+                .map(|s| s.id)
+        })
     }
 
     /// Find `item` exported by `files`: a top-level symbol, or a re-export
@@ -1137,6 +1178,34 @@ pub fn resolve(
     packages: &[Package],
 ) -> (Vec<Edge>, ResolveStats, Vec<Unlinked>) {
     Resolver::new(facts, profiles, packages).resolve_all()
+}
+
+/// The callee of a call expression used as a value: `Child()` -> `Child`,
+/// `new Repo(x)` -> `Repo`, `Store::new()` -> `Store::new`. `None` when `e`
+/// is not one call (e.g. `a().b`, `f(x)[0]`).
+fn call_callee(e: &str) -> Option<&str> {
+    let e = e.strip_prefix("new ").unwrap_or(e).trim();
+    if !e.ends_with(')') {
+        return None;
+    }
+    let open = e.find('(')?;
+    // The first `(` must close at the very end.
+    let mut depth = 0i32;
+    for (i, ch) in e[open..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 && open + i != e.len() - 1 {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    let callee = e[..open].trim();
+    let ok = !callee.is_empty() && callee.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '$' | ':' | '.'));
+    ok.then_some(callee)
 }
 
 fn is_super_kind(kind: &str) -> bool {

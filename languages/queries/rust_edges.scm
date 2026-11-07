@@ -83,3 +83,6 @@
 (for_expression pattern: (identifier) @binding.name value: (_) @binding.iter)
 ; use a::{b::{self, ..}}  (binds module `b`)
 (use_declaration argument: (scoped_use_list path: (_) @import.path list: (use_list (scoped_use_list path: (identifier) @import.name list: (use_list (self))))))
+
+; A function passed as an argument: `.map(checksum)`.
+((call_expression arguments: (arguments (identifier) @call.name)) (#set! edge "callback"))

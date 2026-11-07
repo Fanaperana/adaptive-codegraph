@@ -16,7 +16,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 /// Edge kinds through which a change propagates to the *source* of the edge.
-const IMPACT_KINDS: &[&str] = &["calls", "references", "inherits", "implements", "overrides", "renders"];
+const IMPACT_KINDS: &[&str] = &["calls", "callback", "references", "inherits", "implements", "overrides", "renders"];
 
 /// Kinds worth showing in maps and context.
 fn is_interesting(s: &Symbol) -> bool {

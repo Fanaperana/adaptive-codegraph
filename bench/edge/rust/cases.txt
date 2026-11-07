@@ -1,0 +1,6 @@
+# case | symbol for codegraph | name for grep / ast-grep | expected callers (@def ids, comma separated)
+same associated function name on two types (Store::new vs Cache::new) | src/store.rs::Store::new | new | build
+chained method calls (s.save(1).save(2)), name in a string | src/store.rs::Store::save | save | build
+call through Self:: inside the impl | src/store.rs::Store::reset | reset | Store::flush
+call inside a macro argument (println!) | src/util.rs::compute | compute | in_macro
+aliased use, called inside a closure | src/util.rs::checksum | checksum | in_closure

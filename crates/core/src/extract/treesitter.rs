@@ -368,11 +368,11 @@ impl TreeSitterExtractor {
                     });
                 } else if let Some(path) = path {
                     if let Some(d) = default {
-                        let local = text(d, src);
+                        // `import x from "./m"` binds m's default export.
                         result.imports.push(Import {
-                            local: local.clone(),
+                            local: text(d, src),
                             path: path.clone(),
-                            item: Some(local),
+                            item: Some("default".into()),
                             line,
                         });
                     }
@@ -409,9 +409,8 @@ impl TreeSitterExtractor {
                 let type_name = one(c.binding_type).and_then(|n| clean_type(&text(n, src)));
                 let call = one(c.binding_call).map(|n| text(n, src));
                 let iter = one(c.binding_iter).map(|n| text(n, src));
-                if type_name.is_none() && call.is_none() && iter.is_none() {
-                    continue;
-                }
+                // Kept even with no type: a local still shadows same-named
+                // functions (`format_name = lambda s: s`).
                 result.bindings.push(Binding {
                     scope: index.innermost(&result.symbols, bn.start_byte()),
                     name: text(bn, src),

@@ -46,3 +46,8 @@
 (assignment left: (attribute object: (identifier) attribute: (identifier)) @binding.name type: (_) @binding.type)
 ; for x in xs
 (for_statement left: (identifier) @binding.name right: (_) @binding.iter)
+
+; A local assigned a lambda: shadows a same-named function.
+(assignment left: (identifier) @binding.name right: (lambda))
+; A function passed as an argument: `map(format_name, items)`.
+((call arguments: (argument_list (identifier) @call.name)) (#set! edge "callback"))

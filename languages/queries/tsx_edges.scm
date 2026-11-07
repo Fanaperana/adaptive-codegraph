@@ -55,3 +55,6 @@
 (assignment_expression left: (member_expression object: (this) property: (property_identifier)) @binding.name right: (call_expression function: (_) @binding.call))
 ; for (const x of xs)
 (for_in_statement left: (identifier) @binding.name right: (_) @binding.iter)
+
+; A function passed as an argument: `items.map(parse)`.
+((call_expression arguments: (arguments (identifier) @call.name)) (#set! edge "callback"))
