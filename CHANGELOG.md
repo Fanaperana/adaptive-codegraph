@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (no replies to notifications, `ping`, version negotiation).
 - **Claude Code plugin** in `plugin/` and a status-line mod in
   `mods/codegraph-status`, both in the repo's marketplace manifest.
+  The status line also shows each graph tool call live (tool, target,
+  result size, time).
 - Safe to run in every project: a cross-process index lock, the index folder
   git-ignores itself, the session-start hook skips non-project folders, and
   `max_files` caps accidental huge indexes. `status` no longer builds an index.

@@ -62,13 +62,68 @@ export const register: Register = on => {
     }
   })
 
-  // Refresh the status line after edits (the MCP server re-indexes on its
-  // next query; this only reads the counts).
+  // Graph tool calls: show which tool is running and on what, then how it
+  // went, then fall back to the index counts.
+  let running = 0
+  let latest = 0
+
   on('tool.call', async ($, e, next) => {
-    const ran = await next(e)
-    if (e.tool === 'Edit' || e.tool === 'Write') {
-      void readStatus($).then(s => s && $.ui.status(s.line))
+    const tool = graphTool(e.tool)
+    if (!tool) {
+      const ran = await next(e)
+      // Refresh the counts after edits (the MCP server re-indexes on its
+      // next query; this only reads the counts).
+      if (e.tool === 'Edit' || e.tool === 'Write') {
+        void readStatus($).then(s => s && running === 0 && $.ui.status(s.line))
+      }
+      return ran
     }
-    return ran
-  })
+
+    const what = target(e as Record<string, unknown>)
+    const label = what ? `${tool} · ${what}` : tool
+    const call = ++latest
+    running++
+    $.ui.status(running > 1 ? `◐ ${running} graph calls` : `◐ ${label}`)
+    const started = Date.now()
+    try {
+      const ran = await next(e)
+      const secs = ((Date.now() - started) / 1000).toFixed(1)
+      const failed = ran.deny !== undefined || ran.isError === true
+      if (call === latest) {
+        $.ui.status(failed ? `✖ ${label}` : `✓ ${label} · ${summary(ran.text)} · ${secs}s`)
+      }
+      return ran
+    } finally {
+      running--
+      void $.clock.sleep(10_000).then(async () => {
+        if (call !== latest || running > 0) return
+        const s = await readStatus($)
+        if (call === latest && running === 0) $.ui.status(s ? s.line : MISSING)
+      })
+    }
+  }).catch(($, e, next) => next(e)) // a status bug must never block the tool
+}
+
+/** `explain` for `mcp__plugin_adaptive-codegraph_adaptive-codegraph__explain`. */
+function graphTool(name: string): string | undefined {
+  const m = /^mcp__.*adaptive-codegraph__([a-z_]+)$/.exec(name)
+  return m ? m[1] : undefined
+}
+
+const clip = (s: string, n = 40) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
+
+/** The tool's main argument: the symbol, query, task or file it was asked about. */
+function target(args: Record<string, unknown>): string {
+  const str = (k: string) => (typeof args[k] === 'string' ? (args[k] as string).trim() : '')
+  if (str('from') && str('to')) return clip(`${str('from')} → ${str('to')}`)
+  for (const k of ['symbol', 'query', 'task', 'file', 'path']) {
+    if (str(k)) return clip(str(k).replace(/\s+/g, ' '))
+  }
+  return ''
+}
+
+/** How much the tool returned, in lines. */
+function summary(text: string | undefined): string {
+  const lines = (text ?? '').split('\n').filter(l => l.trim()).length
+  return `${lines} line${lines === 1 ? '' : 's'}`
 }

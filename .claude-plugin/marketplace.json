@@ -10,7 +10,7 @@
     {
       "name": "codegraph-status",
       "source": "./mods/codegraph-status",
-      "description": "Status-line entry with the code graph's index health, plus /codegraph-status and /codegraph-reindex."
+      "description": "Status-line entry with the code graph's index health and live graph tool calls, plus /codegraph-status and /codegraph-reindex."
     }
   ]
 }

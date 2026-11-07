@@ -97,7 +97,7 @@ The plugin wires everything into [Claude Code](https://claude.com/claude-code), 
 - a **session-start hook** that refreshes the index and gives Claude a short map of the most important code
 - a **skill** that teaches Claude when to use the graph instead of grep
 - **commands**: `/impact <symbol>`, `/codemap [path]`, `/explain <symbol>`
-- an optional **status-line mod** (`codegraph-status`) showing index health, with `/codegraph-status` and `/codegraph-reindex`
+- an optional **status-line mod** (`codegraph-status`) showing index health and each graph tool call as it runs (`◐ impact · Store::save` → `✓ impact · Store::save · 24 lines · 0.3s`), with `/codegraph-status` and `/codegraph-reindex`
 
 ```bash
 ./install.sh   # the plugin calls the installed binaries
