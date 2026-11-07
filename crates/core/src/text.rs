@@ -108,7 +108,12 @@ impl TextIndex {
     /// Bring the index in line with the files on disk. Returns how many
     /// files were read again or removed (0 when nothing changed).
     pub fn refresh(&mut self, config: &Config, base: &Path, index_dir: &Path) -> anyhow::Result<usize> {
-        let disk = walk_files(config, base, MAX_BYTES, &|_| true)?;
+        // Search what ripgrep would: .gitignore decides, not the graph's
+        // default excludes (`build/` is source code in many projects).
+        // Excludes the user added to the config still apply.
+        let defaults = Config::default().exclude;
+        let user: Vec<String> = config.exclude.iter().filter(|e| !defaults.contains(e)).cloned().collect();
+        let disk = walk_files(config, base, &user, MAX_BYTES, &|_| true)?;
         let mut old: HashMap<String, TextFile> = std::mem::take(&mut self.files)
             .into_iter()
             .map(|f| (f.path.clone(), f))

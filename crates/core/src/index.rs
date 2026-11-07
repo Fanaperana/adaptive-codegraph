@@ -452,7 +452,7 @@ fn collect_files(
     registry: &ExtractorRegistry,
     base: &Path,
 ) -> anyhow::Result<Vec<DiskFile>> {
-    let files = walk_files(config, base, config.max_file_bytes, &|p: &Path| {
+    let files = walk_files(config, base, &config.exclude, config.max_file_bytes, &|p: &Path| {
         p.extension()
             .and_then(|e| e.to_str())
             .map(|ext| registry.for_extension(ext).is_some())
@@ -470,15 +470,16 @@ fn collect_files(
 }
 
 /// Every file under the configured roots that `keep` accepts, honouring
-/// .gitignore, hidden files, `exclude` globs and a size limit. Sorted by path.
+/// .gitignore, hidden files, the `exclude` globs and a size limit. Sorted by path.
 pub(crate) fn walk_files(
     config: &Config,
     base: &Path,
+    exclude: &[String],
     max_bytes: u64,
     keep: &dyn Fn(&Path) -> bool,
 ) -> anyhow::Result<Vec<DiskFile>> {
     let mut gs = globset::GlobSetBuilder::new();
-    for pat in &config.exclude {
+    for pat in exclude {
         if let Ok(g) = globset::Glob::new(pat) {
             gs.add(g);
         }

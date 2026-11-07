@@ -239,10 +239,12 @@ pub fn embed_text(sym: &crate::model::Symbol) -> String {
     t
 }
 
-/// Create the appropriate embedder based on feature flags.
+/// Create the appropriate embedder based on feature flags. Set
+/// `ACG_NO_EMBED=1` to skip the model (lexical search only; much faster
+/// indexing of very large repositories).
 pub fn create_embedder() -> Box<dyn Embedder> {
     #[cfg(feature = "fastembed")]
-    {
+    if std::env::var_os("ACG_NO_EMBED").is_none() {
         match TransformerEmbedder::new() {
             Ok(e) => return Box::new(e),
             Err(e) => {

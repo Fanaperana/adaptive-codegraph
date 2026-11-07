@@ -59,6 +59,11 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let base = PathBuf::from(&args.base).canonicalize()?;
     let mut ws = Workspace::open(&base)?;
+    // Re-check files only after they change (falls back to checking on
+    // every call when the platform cannot watch).
+    if let Err(e) = ws.watch() {
+        tracing::warn!("file watching unavailable, checking files on every call: {e}");
+    }
 
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();

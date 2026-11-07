@@ -31,6 +31,7 @@ gix = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 rayon = { workspace = true }
+notify = { workspace = true }
 tracing = { workspace = true }
 regex-lite = { workspace = true }
 regex = { workspace = true }

@@ -23,6 +23,8 @@ use crate::text::{TextHit, TextIndex, TextQuery};
 use serde::Serialize;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Approximate characters per token, for budget arguments.
@@ -37,12 +39,21 @@ pub struct Workspace {
     vectors: Option<VectorIndex>,
     embedder: Option<Box<dyn Embedder>>,
     text: Option<TextIndex>,
+    watch: Option<Watch>,
     last_check: Option<Instant>,
     /// Minimum time between freshness checks (default: check before every
     /// answer, so a query right after an edit sees the edit).
     pub refresh_interval: Duration,
     /// Disable automatic refresh (e.g. for benchmarks).
     pub auto_refresh: bool,
+}
+
+/// A file watcher that tells a long-running process (the MCP server) when
+/// files changed, so freshness checks only walk the tree after a change.
+struct Watch {
+    _watcher: notify::RecommendedWatcher,
+    graph_dirty: Arc<AtomicBool>,
+    text_dirty: Arc<AtomicBool>,
 }
 
 /// A symbol as shown in structured (JSON) output.
@@ -129,10 +140,38 @@ impl Workspace {
             vectors: None,
             embedder: None,
             text: None,
+            watch: None,
             last_check: None,
             refresh_interval: Duration::ZERO,
             auto_refresh: true,
         })
+    }
+
+    /// Watch the workspace for changes. After this, the stat walk that
+    /// checks freshness runs only when something under `base` changed
+    /// (edits to the index itself and to `.git/` are ignored).
+    pub fn watch(&mut self) -> anyhow::Result<()> {
+        use notify::Watcher as _;
+        let graph_dirty = Arc::new(AtomicBool::new(true));
+        let text_dirty = Arc::new(AtomicBool::new(true));
+        let (g, t) = (graph_dirty.clone(), text_dirty.clone());
+        let skip = [self.index_dir(), self.base.join(".git")];
+        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            let relevant = match res {
+                Ok(ev) => {
+                    !matches!(ev.kind, notify::EventKind::Access(_))
+                        && ev.paths.iter().any(|p| !skip.iter().any(|s| p.starts_with(s)))
+                }
+                Err(_) => true, // lost events: check on the next query
+            };
+            if relevant {
+                g.store(true, Ordering::SeqCst);
+                t.store(true, Ordering::SeqCst);
+            }
+        })?;
+        watcher.watch(&self.base, notify::RecursiveMode::Recursive)?;
+        self.watch = Some(Watch { _watcher: watcher, graph_dirty, text_dirty });
+        Ok(())
     }
 
     pub fn index_dir(&self) -> PathBuf {
@@ -210,6 +249,11 @@ impl Workspace {
             }
         }
         self.last_check = Some(Instant::now());
+        if let Some(w) = &self.watch {
+            if !w.graph_dirty.swap(false, Ordering::SeqCst) {
+                return Ok(None);
+            }
+        }
         if index::is_up_to_date(&self.config, &self.registry, self.store())? {
             return Ok(None);
         }
@@ -415,10 +459,8 @@ impl Workspace {
     /// each match tagged with the symbol that contains it. The text index is
     /// refreshed first, so results match the files on disk.
     pub fn grep(&mut self, q: &TextQuery) -> anyhow::Result<GrepResult> {
-        let index_dir = self.index_dir();
-        let text = self.text.get_or_insert_with(|| TextIndex::load(&index_dir));
-        text.refresh(&self.config, &self.base, &index_dir)?;
-        let r = text.search(q)?;
+        self.refresh_text()?;
+        let r = self.text.as_ref().expect("loaded by refresh_text").search(q)?;
         let store = self.store.as_ref();
         let matches = r
             .hits
@@ -435,6 +477,11 @@ impl Workspace {
     pub fn refresh_text(&mut self) -> anyhow::Result<usize> {
         let index_dir = self.index_dir();
         let text = self.text.get_or_insert_with(|| TextIndex::load(&index_dir));
+        if let Some(w) = &self.watch {
+            if !w.text_dirty.swap(false, Ordering::SeqCst) {
+                return Ok(0);
+            }
+        }
         text.refresh(&self.config, &self.base, &index_dir)
     }
 
