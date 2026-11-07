@@ -104,6 +104,53 @@ pub fn incremental_index(base: &Path, idx: &Path) -> Result<Graph> {
     Ok(snapshot(base, &store))
 }
 
+/// Loaded search state for running many queries.
+pub struct SearchCtx {
+    store: Store,
+    search: SearchIndex,
+    vectors: Option<VectorIndex>,
+    embedder: Box<dyn embed::Embedder>,
+}
+
+pub fn search_ctx(idx: &Path) -> Result<SearchCtx> {
+    Ok(SearchCtx {
+        store: Store::load(&idx.join("graph.bin"))?,
+        search: SearchIndex::open(idx)?,
+        vectors: VectorIndex::load(&idx.join("vectors.bin")).ok(),
+        embedder: embed::create_embedder(),
+    })
+}
+
+pub type Hits = Vec<(String, String)>;
+
+/// Run a query with the legacy, lexical and hybrid search. Returns
+/// (name, file) lists; hybrid is `None` without a semantic model.
+pub fn search_all(ctx: &SearchCtx, q: &str, k: usize) -> Result<(Hits, Hits, Option<Hits>)> {
+    let to = |v: Vec<(&adaptive_codegraph_core::model::Symbol, f32)>| -> Hits {
+        v.into_iter().map(|(s, _)| (s.name.clone(), s.file.clone())).collect()
+    };
+    let legacy = ctx
+        .search
+        .search_legacy(q, k)?
+        .into_iter()
+        .map(|h| (h.name, h.file))
+        .collect();
+    let lexical = to(query::search(&ctx.store, &ctx.search, q, k)?);
+    let hybrid = if ctx.embedder.is_semantic() && ctx.vectors.as_ref().map(|v| !v.is_empty()).unwrap_or(false) {
+        Some(to(query::hybrid_search(
+            &ctx.store,
+            &ctx.search,
+            ctx.vectors.as_ref(),
+            Some(ctx.embedder.as_ref()),
+            q,
+            k,
+        )?))
+    } else {
+        None
+    };
+    Ok((legacy, lexical, hybrid))
+}
+
 /// Average text size of a depth-1 neighborhood for the `n` most connected
 /// symbols, plus average query time (load excluded).
 pub fn neighborhood_cost(idx: &Path, n: usize) -> Result<(usize, f64)> {

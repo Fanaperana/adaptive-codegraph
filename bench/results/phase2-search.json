@@ -1,0 +1,37 @@
+{
+  "label": "phase2-search",
+  "fixtures": [],
+  "overall": {},
+  "repos": [],
+  "search": {
+    "repo": "ast-grep",
+    "legacy": {
+      "queries": 24,
+      "recall_at_1": 0.25,
+      "recall_at_5": 0.4583333333333333,
+      "recall_at_10": 0.5,
+      "mrr": 0.3190972222222222
+    },
+    "current": {
+      "queries": 24,
+      "recall_at_1": 0.4166666666666667,
+      "recall_at_5": 0.7083333333333334,
+      "recall_at_10": 0.7916666666666666,
+      "mrr": 0.5621527777777777
+    },
+    "hybrid": {
+      "queries": 24,
+      "recall_at_1": 0.6666666666666666,
+      "recall_at_5": 0.875,
+      "recall_at_10": 0.9166666666666666,
+      "mrr": 0.7586805555555557
+    },
+    "misses": [
+      "decide whether terminal output should be colored => should_use_color; got match_terminal (crates/core/src/match_tree/mod.rs), is_light_terminal (crates/cli/src/print/colored_print/markdown.rs), colored (crates/cli/src/print/colored_print/styles.rs)",
+      "ask the user for a single character answer => prompt_reply_stdout; got ask_name (crates/cli/src/new.rs), ask_dir (crates/cli/src/new.rs), test_illegal_character (crates/config/src/rule/selector.rs)",
+      "convert a negative character index to an absolute position => resolve_char; got Position (crates/cli/src/print/json_print.rs), Convert (crates/config/src/transform/trans.rs), Position (crates/core/src/node.rs)",
+      "deserialize several yaml documents skipping empty ones => from_multiple; got test_yaml_document_stream_skips_null_and_empty_documents (crates/config/src/lib.rs), deserialize_snapshot_yaml (crates/cli/src/verify/find_file.rs), deserialize_test_yaml (crates/cli/src/verify/find_file.rs)",
+      "match length excluding trailing punctuation => get_match_len; got should_skip_trailing (crates/core/src/match_tree/strictness.rs), test_multi_var_match_with_trailing (crates/core/src/meta_var.rs), test_trailing_ellipsis (crates/core/src/match_tree/mod.rs)"
+    ]
+  }
+}

@@ -118,6 +118,7 @@ pub fn update_index(
     }
 
     // Parse changed files in parallel.
+    let t_parse = std::time::Instant::now();
     let failures = AtomicUsize::new(0);
     let parsed: Vec<(FileFacts, Vec<u8>)> = changed
         .par_iter()
@@ -148,6 +149,7 @@ pub fn update_index(
         })
         .collect();
     stats.parse_failures = failures.load(Ordering::Relaxed);
+    timing("parse", t_parse);
 
     let new_files: Vec<String> = parsed.iter().map(|(f, _)| f.file.clone()).collect();
     for (f, _) in &parsed {
@@ -179,7 +181,10 @@ pub fn update_index(
     }
 
     // Resolve the whole project.
-    let store = Store::from_facts(facts, registry.profiles());
+    let t_resolve = std::time::Instant::now();
+    let packages = detect_packages(config, base);
+    let store = Store::from_facts_with_packages(facts, registry.profiles(), packages);
+    timing("resolve", t_resolve);
     tracing::info!(
         "Graph: {} symbols, {} edges ({} files parsed, {} deleted)",
         store.symbol_count(),
@@ -189,6 +194,7 @@ pub fn update_index(
     );
 
     // Search index.
+    let t_search = std::time::Instant::now();
     let search = SearchIndex::open(&index_dir)?;
     let mut writer = search.writer(50_000_000)?;
     if full {
@@ -199,15 +205,24 @@ pub fn update_index(
         }
     }
     for rel in &new_files {
-        if let Some(f) = store.facts.get(rel) {
-            for sym in &f.symbols {
-                search.index_symbol(&writer, sym);
-            }
+        let Some(f) = store.facts.get(rel) else { continue };
+        let content = std::fs::read(base.join(rel)).unwrap_or_default();
+        for sym in &f.symbols {
+            let body = if sym.kind == "file" {
+                String::new()
+            } else {
+                let end = sym.span.end_byte.min(content.len());
+                let start = sym.span.start_byte.min(end);
+                crate::search::body_words(&String::from_utf8_lossy(&content[start..end]), 300)
+            };
+            search.index_symbol_with_body(&writer, sym, &body);
         }
     }
     writer.commit()?;
+    timing("search index", t_search);
 
     // Vector index.
+    let t_embed = std::time::Instant::now();
     let embedder = embed::create_embedder();
     let dim = embedder.dim();
     let mut vectors = if full {
@@ -228,8 +243,12 @@ pub fn update_index(
             .flat_map(|f| f.symbols.iter())
             .collect()
     };
-    let to_embed: Vec<&crate::model::Symbol> =
-        to_embed.into_iter().filter(|s| s.kind != "file").collect();
+    // Hash vectors carry no meaning: only build vectors with a real model.
+    let to_embed: Vec<&crate::model::Symbol> = if embedder.is_semantic() {
+        to_embed.into_iter().filter(|s| embed::should_embed(s)).collect()
+    } else {
+        Vec::new()
+    };
     if !to_embed.is_empty() {
         let texts: Vec<String> = to_embed.iter().map(|s| embed::embed_text(s)).collect();
         let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
@@ -243,7 +262,10 @@ pub fn update_index(
         }
     }
 
+    timing("embed", t_embed);
+
     // Persist.
+    let t_save = std::time::Instant::now();
     let state = IndexState {
         git_head: detect_git_head(base),
         indexed_at: Some(
@@ -258,8 +280,81 @@ pub fn update_index(
     state.save(&index_dir.join("state.json"))?;
     store.save(&index_dir.join("graph.bin"))?;
     vectors.save(&index_dir.join("vectors.bin"))?;
+    timing("save", t_save);
 
     Ok((store, search, vectors, stats))
+}
+
+/// Print a phase timing when `ACG_TIMINGS` is set.
+fn timing(phase: &str, t: std::time::Instant) {
+    if std::env::var_os("ACG_TIMINGS").is_some() {
+        eprintln!("[timing] {phase}: {:.2}s", t.elapsed().as_secs_f64());
+    }
+    tracing::debug!("{phase}: {:.2}s", t.elapsed().as_secs_f64());
+}
+
+/// Find package roots from manifests: `Cargo.toml` (crate names),
+/// `go.mod` (module path) and `package.json` (package name).
+pub fn detect_packages(config: &Config, base: &Path) -> Vec<crate::resolve::Package> {
+    let mut out = Vec::new();
+    let walker = ignore::WalkBuilder::new(base)
+        .hidden(true)
+        .git_ignore(true)
+        .require_git(false)
+        .max_depth(Some(6))
+        .filter_entry(|e| {
+            let n = e.file_name().to_string_lossy();
+            n != "node_modules" && n != "target" && n != "vendor"
+        })
+        .build();
+    let index_dir = base.join(&config.index_dir);
+    for entry in walker.flatten() {
+        let path = entry.path();
+        if path.starts_with(&index_dir) {
+            continue;
+        }
+        let Some(fname) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        if !matches!(fname, "Cargo.toml" | "go.mod" | "package.json") {
+            continue;
+        }
+        let dir = path.parent().map(|d| rel_path(base, d)).unwrap_or_default();
+        let Ok(text) = std::fs::read_to_string(path) else { continue };
+        match fname {
+            "Cargo.toml" => {
+                if let Ok(v) = text.parse::<toml::Table>() {
+                    let pkg = v.get("package").and_then(|p| p.get("name")).and_then(|n| n.as_str());
+                    let lib = v.get("lib").and_then(|p| p.get("name")).and_then(|n| n.as_str());
+                    for name in [pkg, lib].into_iter().flatten() {
+                        out.push(crate::resolve::Package {
+                            name: name.replace('-', "_"),
+                            dir: dir.clone(),
+                        });
+                    }
+                }
+            }
+            "go.mod" => {
+                if let Some(m) = text.lines().find_map(|l| l.trim().strip_prefix("module ")) {
+                    out.push(crate::resolve::Package {
+                        name: m.trim().to_string(),
+                        dir: dir.clone(),
+                    });
+                }
+            }
+            _ => {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if let Some(n) = v.get("name").and_then(|n| n.as_str()) {
+                        out.push(crate::resolve::Package {
+                            name: n.to_string(),
+                            dir: dir.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| (&a.name, &a.dir).cmp(&(&b.name, &b.dir)));
+    out.dedup();
+    out
 }
 
 /// Workspace-relative path with forward slashes.

@@ -20,6 +20,12 @@ pub trait Embedder: Send + Sync {
 
     /// Embed a batch of text strings.
     fn embed_batch(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>>;
+
+    /// Whether similar meanings get similar vectors. The hash fallback is
+    /// not semantic and must not be used for "semantic" ranking.
+    fn is_semantic(&self) -> bool {
+        true
+    }
 }
 
 /// BLAKE3 hash-based pseudo-embedder. Zero dependencies, deterministic.
@@ -39,6 +45,10 @@ impl Embedder for HashEmbedder {
     fn embed_batch(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
         texts.iter().map(|t| self.embed_one(t)).collect()
     }
+
+    fn is_semantic(&self) -> bool {
+        false
+    }
 }
 
 /// Fastembed transformer-based embedder (optional feature).
@@ -52,10 +62,31 @@ impl TransformerEmbedder {
     pub fn new() -> anyhow::Result<Self> {
         let model = fastembed::TextEmbedding::try_new(
             fastembed::InitOptions::new(fastembed::EmbeddingModel::BGESmallENV15)
+                .with_cache_dir(model_cache_dir())
                 .with_show_download_progress(true),
         )?;
         Ok(Self { model })
     }
+}
+
+/// Where the embedding model is cached: `ACG_MODEL_DIR`, an existing
+/// `.fastembed_cache` in the working directory (older versions put it
+/// there), or a per-user cache directory shared by all projects.
+#[cfg(feature = "fastembed")]
+fn model_cache_dir() -> std::path::PathBuf {
+    if let Ok(d) = std::env::var("ACG_MODEL_DIR") {
+        return d.into();
+    }
+    let local = std::path::PathBuf::from(".fastembed_cache");
+    if local.is_dir() {
+        return local;
+    }
+    let base = std::env::var("LOCALAPPDATA")
+        .or_else(|_| std::env::var("XDG_CACHE_HOME"))
+        .map(std::path::PathBuf::from)
+        .or_else(|_| std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
+        .unwrap_or_else(|_| std::env::temp_dir());
+    base.join("adaptive-codegraph").join("models")
 }
 
 #[cfg(feature = "fastembed")]
@@ -178,9 +209,34 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     dot / (norm_a * norm_b)
 }
 
-/// Text that represents a symbol for embedding.
+/// Whether a symbol is worth a vector (skips fields, variables, files...).
+pub fn should_embed(sym: &crate::model::Symbol) -> bool {
+    matches!(
+        sym.kind.as_str(),
+        "function" | "method" | "class" | "struct" | "interface" | "trait" | "enum" | "type"
+            | "type_alias" | "module" | "macro"
+    )
+}
+
+/// Text that represents a symbol for embedding: kind, split name and
+/// owner, signature, and the first line of its doc comment.
 pub fn embed_text(sym: &crate::model::Symbol) -> String {
-    sym.name.clone()
+    let mut t = format!("{} {}", sym.kind, crate::search::split_ident(&sym.name));
+    if let Some(o) = sym.owner() {
+        t.push_str(" of ");
+        t.push_str(&crate::search::split_ident(o));
+    }
+    if let Some(sig) = &sym.signature {
+        t.push_str(". ");
+        t.push_str(&sig.chars().take(160).collect::<String>());
+    }
+    if let Some(doc) = &sym.doc {
+        if let Some(first) = doc.lines().find(|l| !l.trim().is_empty()) {
+            t.push_str(". ");
+            t.push_str(first.trim());
+        }
+    }
+    t
 }
 
 /// Create the appropriate embedder based on feature flags.

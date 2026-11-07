@@ -5,7 +5,7 @@
 
 use crate::extract::LangProfile;
 use crate::model::{Edge, FileFacts, Symbol, SymbolId};
-use crate::resolve::{self, ResolveStats};
+use crate::resolve::{self, Package, ResolveStats};
 use ahash::AHashMap;
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 use petgraph::visit::{EdgeRef, IntoEdgeReferences};
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
 /// Bump when the on-disk format changes; older indexes must be rebuilt.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 /// Data carried by a graph edge.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -34,6 +34,7 @@ struct SerializedStore {
     facts: Vec<FileFacts>,
     edges: Vec<Edge>,
     profiles: HashMap<String, LangProfile>,
+    packages: Vec<Package>,
     stats: ResolveStats,
 }
 
@@ -47,6 +48,8 @@ pub struct Store {
     /// Raw per-file facts, keyed by workspace-relative path.
     pub facts: BTreeMap<String, FileFacts>,
     pub profiles: HashMap<String, LangProfile>,
+    /// Package / crate roots (for cross-package imports).
+    pub packages: Vec<Package>,
     pub stats: ResolveStats,
 }
 
@@ -60,9 +63,19 @@ impl Store {
         facts: BTreeMap<String, FileFacts>,
         profiles: HashMap<String, LangProfile>,
     ) -> Self {
+        Self::from_facts_with_packages(facts, profiles, Vec::new())
+    }
+
+    /// Like [`Store::from_facts`], with declared package roots.
+    pub fn from_facts_with_packages(
+        facts: BTreeMap<String, FileFacts>,
+        profiles: HashMap<String, LangProfile>,
+        packages: Vec<Package>,
+    ) -> Self {
         let mut s = Self {
             facts,
             profiles,
+            packages,
             ..Default::default()
         };
         s.rebuild();
@@ -79,7 +92,7 @@ impl Store {
         for s in syms {
             self.insert_symbol(s);
         }
-        let (edges, stats) = resolve::resolve(&self.facts, &self.profiles);
+        let (edges, stats) = resolve::resolve(&self.facts, &self.profiles, &self.packages);
         for e in edges {
             self.add_edge_raw(e);
         }
@@ -296,6 +309,7 @@ impl Store {
             facts: self.facts.values().cloned().collect(),
             edges: self.all_edges(),
             profiles: self.profiles.clone(),
+            packages: self.packages.clone(),
             stats: self.stats.clone(),
         };
         Ok(bincode::serialize(&ss)?)
@@ -312,6 +326,7 @@ impl Store {
         let mut store = Self {
             facts: ss.facts.into_iter().map(|f| (f.file.clone(), f)).collect(),
             profiles: ss.profiles,
+            packages: ss.packages,
             stats: ss.stats,
             ..Default::default()
         };

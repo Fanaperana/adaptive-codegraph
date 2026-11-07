@@ -34,3 +34,22 @@
 (variable_declarator name: (identifier) @binding.name value: (new_expression constructor: (_) @binding.type))
 (variable_declarator name: (identifier) @binding.name value: (call_expression function: (_) @binding.call))
 (variable_declarator name: (identifier) @binding.name value: (await_expression (call_expression function: (_) @binding.call)))
+
+; ── Supertypes ──────────────────────────────────────────────────────────
+
+((class_heritage (identifier) @call.name) (#set! edge "inherits"))
+((class_heritage (member_expression object: (_) @call.receiver property: (property_identifier) @call.name)) (#set! edge "inherits"))
+
+; ── Re-exports ──────────────────────────────────────────────────────────
+
+(export_statement (export_clause (export_specifier name: (identifier) @import.name !alias)) source: (string) @import.path)
+(export_statement (export_clause (export_specifier name: (identifier) @import.name alias: (identifier) @import.alias)) source: (string) @import.path)
+(export_statement "*" source: (string) @import.glob)
+
+; ── Fields and loop variables ───────────────────────────────────────────
+
+(field_definition property: (property_identifier) @binding.name value: (new_expression constructor: (_) @binding.type))
+(field_definition property: (property_identifier) @binding.name value: (call_expression function: (_) @binding.call))
+(assignment_expression left: (member_expression object: (this) property: (property_identifier)) @binding.name right: (new_expression constructor: (_) @binding.type))
+(assignment_expression left: (member_expression object: (this) property: (property_identifier)) @binding.name right: (call_expression function: (_) @binding.call))
+(for_in_statement left: (identifier) @binding.name right: (_) @binding.iter)

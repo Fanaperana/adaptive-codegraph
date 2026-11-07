@@ -139,7 +139,8 @@ pub struct Symbol {
     pub doc: Option<String>,
     /// Enclosing scope path inside the file, e.g. `Store` or `Outer::Inner`.
     pub container: Option<String>,
-    /// Declared type: return type for functions, field/variable type otherwise.
+    /// Declared type as written (e.g. `Vec<Box<dyn Shape>>`): return type for
+    /// functions, field/variable type otherwise.
     pub type_hint: Option<String>,
     /// Innermost enclosing symbol (the file symbol for top-level items).
     pub parent: Option<SymbolId>,
@@ -280,6 +281,8 @@ pub struct Binding {
     pub type_name: Option<String>,
     /// Callee expression whose return type gives the type, e.g. `Store::new`.
     pub call: Option<String>,
+    /// Iterated expression: the type is its element type (`for x in xs`).
+    pub iter: Option<String>,
 }
 
 /// Everything extracted from one file.

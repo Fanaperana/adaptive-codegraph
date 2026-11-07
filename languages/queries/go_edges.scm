@@ -25,3 +25,18 @@
 (var_spec name: (identifier) @binding.name type: (_) @binding.type)
 ; func f(x Type) and method receivers
 (parameter_declaration name: (identifier) @binding.name type: (_) @binding.type)
+
+; ── Supertypes (embedding) ──────────────────────────────────────────────
+
+((field_declaration !name type: (type_identifier) @call.name) (#set! edge "inherits"))
+((field_declaration !name type: (pointer_type (type_identifier) @call.name)) (#set! edge "inherits"))
+((field_declaration !name type: (qualified_type package: (package_identifier) @call.qualifier name: (type_identifier) @call.name)) (#set! edge "inherits"))
+((interface_type (type_elem (type_identifier) @call.name)) (#set! edge "inherits"))
+
+; ── Type references in composite literals ───────────────────────────────
+
+((composite_literal type: (type_identifier) @call.name) (#set! edge "references"))
+((composite_literal type: (qualified_type package: (package_identifier) @call.qualifier name: (type_identifier) @call.name)) (#set! edge "references"))
+
+; for _, v := range xs
+(for_statement (range_clause left: (expression_list (identifier) . (identifier) @binding.name) right: (_) @binding.iter))

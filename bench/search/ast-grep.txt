@@ -1,0 +1,26 @@
+# Search benchmark for github.com/ast-grep/ast-grep at commit cab768cd.
+# Format: natural-language query => expected symbol name @ path substring
+write a file safely, replacing content only after it is fully written => write_atomically @ interactive_print.rs
+decide whether terminal output should be colored => should_use_color @ styles.rs
+open the file in the user's text editor at a given line => open_in_editor @ interactive_print.rs
+ask the user for a single character answer => prompt_reply_stdout @ utils/mod.rs
+parse a css like selector list into a rule => try_parse_selector @ selector.rs
+parse the nth-child An+B argument => parse_nth_child_argument @ selector.rs
+convert a negative character index to an absolute position => resolve_char @ trans.rs
+detect the language of a file from its path => from_path @ core/src/language.rs
+extract a meta variable from a source string => extract_meta_var @ core/src/language.rs
+matcher that only matches error nodes => error_matcher @ kind.rs
+check that referenced util rules are defined => verify_util @ rule/mod.rs
+deserialize several yaml documents skipping empty ones => from_multiple @ config/src/lib.rs
+stop processing files early when the maximum number of results is reached => should_stop @ worker.rs
+reserve slots and return how many were actually reserved => claim @ worker.rs
+did all cases of the rule test pass => passed @ case_result.rs
+failure caused only by snapshot mismatch => is_snapshot_mismatch_only_failure @ case_result.rs
+register global utility rules found in the configuration => parse_global_utils @ deserialize_env.rs
+print the title of the fix diffs => print_diff_title @ colored_print.rs
+find the project and set up custom language configuration => setup_project_is_possible @ cli/src/lib.rs
+check rule variables with a scope hint => check_rule_with_hint @ check_var.rs
+bitset of node kinds a matcher can possibly match => potential_kinds @ matcher.rs
+match length excluding trailing punctuation => get_match_len @ matcher.rs
+detect an ellipsis pattern and return its name => try_get_ellipsis_mode @ match_node.rs
+normalize pattern code before matching => pre_process_pattern @ core/src/language.rs

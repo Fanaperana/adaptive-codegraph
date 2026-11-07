@@ -1,0 +1,448 @@
+{
+  "label": "phase2",
+  "fixtures": [
+    {
+      "name": "go",
+      "accuracy": {
+        "1": {
+          "tp": 17,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "2": {
+          "tp": 17,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "3": {
+          "tp": 17,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "false_positives": [],
+      "false_negatives": [],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 0,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "py-holdout",
+      "accuracy": {
+        "1": {
+          "tp": 11,
+          "fp": 0,
+          "fn_": 1,
+          "precision": 1.0,
+          "recall": 0.9166666666666666,
+          "f1": 0.9565217391304348
+        },
+        "2": {
+          "tp": 10,
+          "fp": 0,
+          "fn_": 2,
+          "precision": 1.0,
+          "recall": 0.8333333333333334,
+          "f1": 0.9090909090909091
+        },
+        "3": {
+          "tp": 10,
+          "fp": 0,
+          "fn_": 2,
+          "precision": 1.0,
+          "recall": 0.8333333333333334,
+          "f1": 0.9090909090909091
+        }
+      },
+      "false_positives": [],
+      "false_negatives": [
+        "Repository::find -> Database::get"
+      ],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 0,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "python",
+      "accuracy": {
+        "1": {
+          "tp": 22,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "2": {
+          "tp": 22,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "3": {
+          "tp": 22,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "false_positives": [],
+      "false_negatives": [],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 0,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "rs-holdout",
+      "accuracy": {
+        "1": {
+          "tp": 6,
+          "fp": 0,
+          "fn_": 1,
+          "precision": 1.0,
+          "recall": 0.8571428571428571,
+          "f1": 0.923076923076923
+        },
+        "2": {
+          "tp": 6,
+          "fp": 0,
+          "fn_": 1,
+          "precision": 1.0,
+          "recall": 0.8571428571428571,
+          "f1": 0.923076923076923
+        },
+        "3": {
+          "tp": 6,
+          "fp": 0,
+          "fn_": 1,
+          "precision": 1.0,
+          "recall": 0.8571428571428571,
+          "f1": 0.923076923076923
+        }
+      },
+      "false_positives": [],
+      "false_negatives": [
+        "total_area -> Circle::area"
+      ],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 0,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "rust",
+      "accuracy": {
+        "1": {
+          "tp": 25,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "2": {
+          "tp": 25,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "3": {
+          "tp": 25,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "false_positives": [],
+      "false_negatives": [],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 0,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "ts-holdout",
+      "accuracy": {
+        "1": {
+          "tp": 12,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "2": {
+          "tp": 12,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "3": {
+          "tp": 12,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "false_positives": [],
+      "false_negatives": [],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 0,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    },
+    {
+      "name": "typescript",
+      "accuracy": {
+        "1": {
+          "tp": 20,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "2": {
+          "tp": 20,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        },
+        "3": {
+          "tp": 20,
+          "fp": 0,
+          "fn_": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0
+        }
+      },
+      "false_positives": [],
+      "false_negatives": [],
+      "missing_symbols": [],
+      "duplicate_symbols": 0,
+      "incremental_missing_edges": 0,
+      "incremental_extra_edges": 0,
+      "incremental_missing_symbols": 0,
+      "incremental_extra_symbols": 0
+    }
+  ],
+  "overall": {
+    "all@1": {
+      "tp": 113,
+      "fp": 0,
+      "fn_": 2,
+      "precision": 1.0,
+      "recall": 0.9826086956521739,
+      "f1": 0.9912280701754386
+    },
+    "all@2": {
+      "tp": 112,
+      "fp": 0,
+      "fn_": 3,
+      "precision": 1.0,
+      "recall": 0.9739130434782609,
+      "f1": 0.986784140969163
+    },
+    "all@3": {
+      "tp": 112,
+      "fp": 0,
+      "fn_": 3,
+      "precision": 1.0,
+      "recall": 0.9739130434782609,
+      "f1": 0.986784140969163
+    },
+    "design@1": {
+      "tp": 84,
+      "fp": 0,
+      "fn_": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "design@2": {
+      "tp": 84,
+      "fp": 0,
+      "fn_": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "design@3": {
+      "tp": 84,
+      "fp": 0,
+      "fn_": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0
+    },
+    "holdout@1": {
+      "tp": 29,
+      "fp": 0,
+      "fn_": 2,
+      "precision": 1.0,
+      "recall": 0.9354838709677419,
+      "f1": 0.9666666666666666
+    },
+    "holdout@2": {
+      "tp": 28,
+      "fp": 0,
+      "fn_": 3,
+      "precision": 1.0,
+      "recall": 0.9032258064516129,
+      "f1": 0.9491525423728813
+    },
+    "holdout@3": {
+      "tp": 28,
+      "fp": 0,
+      "fn_": 3,
+      "precision": 1.0,
+      "recall": 0.9032258064516129,
+      "f1": 0.9491525423728813
+    }
+  },
+  "repos": [
+    {
+      "repo": "crates",
+      "index_secs": 0.2764163,
+      "files": 22,
+      "symbols": 891,
+      "duplicate_symbol_ids": 0,
+      "call_edges": 630,
+      "call_edges_by_conf": {
+        "1": 41,
+        "3": 589
+      },
+      "duplicate_edges": 0,
+      "calls_into_non_callable": 0,
+      "calls_from_containers": 0,
+      "absolute_paths": false,
+      "graph_bytes": 745733,
+      "avg_neighborhood_bytes": 3140,
+      "query_ms_avg": 0.02833
+    },
+    {
+      "repo": "ast-grep",
+      "index_secs": 0.4343956,
+      "files": 185,
+      "symbols": 5853,
+      "duplicate_symbol_ids": 0,
+      "call_edges": 3899,
+      "call_edges_by_conf": {
+        "1": 465,
+        "2": 222,
+        "3": 3212
+      },
+      "duplicate_edges": 0,
+      "calls_into_non_callable": 0,
+      "calls_from_containers": 5,
+      "absolute_paths": false,
+      "graph_bytes": 4193974,
+      "avg_neighborhood_bytes": 5820,
+      "query_ms_avg": 0.052500000000000005
+    },
+    {
+      "repo": "private-rust-app",
+      "index_secs": 1.1532875,
+      "files": 377,
+      "symbols": 16468,
+      "duplicate_symbol_ids": 0,
+      "call_edges": 25955,
+      "call_edges_by_conf": {
+        "1": 5855,
+        "2": 146,
+        "3": 19954
+      },
+      "duplicate_edges": 0,
+      "calls_into_non_callable": 14,
+      "calls_from_containers": 1,
+      "absolute_paths": false,
+      "graph_bytes": 21874749,
+      "avg_neighborhood_bytes": 8398,
+      "query_ms_avg": 0.121045
+    },
+    {
+      "repo": "src",
+      "index_secs": 9.7151586,
+      "files": 6339,
+      "symbols": 224215,
+      "duplicate_symbol_ids": 0,
+      "call_edges": 169057,
+      "call_edges_by_conf": {
+        "1": 7845,
+        "2": 8757,
+        "3": 152455
+      },
+      "duplicate_edges": 0,
+      "calls_into_non_callable": 0,
+      "calls_from_containers": 26,
+      "absolute_paths": false,
+      "graph_bytes": 190893226,
+      "avg_neighborhood_bytes": 9367,
+      "query_ms_avg": 1.1679650000000001
+    }
+  ],
+  "search": {
+    "repo": "ast-grep",
+    "legacy": {
+      "queries": 24,
+      "recall_at_1": 0.25,
+      "recall_at_5": 0.4583333333333333,
+      "recall_at_10": 0.5,
+      "mrr": 0.3170138888888889
+    },
+    "current": {
+      "queries": 24,
+      "recall_at_1": 0.4166666666666667,
+      "recall_at_5": 0.7083333333333334,
+      "recall_at_10": 0.7916666666666666,
+      "mrr": 0.5621527777777777
+    },
+    "hybrid": null,
+    "misses": [
+      "decide whether terminal output should be colored => should_use_color; got match_terminal (crates/core/src/match_tree/mod.rs), is_light_terminal (crates/cli/src/print/colored_print/markdown.rs), colored (crates/cli/src/print/colored_print/styles.rs)",
+      "ask the user for a single character answer => prompt_reply_stdout; got ask_name (crates/cli/src/new.rs), ask_dir (crates/cli/src/new.rs), test_illegal_character (crates/config/src/rule/selector.rs)",
+      "convert a negative character index to an absolute position => resolve_char; got Position (crates/cli/src/print/json_print.rs), Convert (crates/config/src/transform/trans.rs), Position (crates/core/src/node.rs)",
+      "deserialize several yaml documents skipping empty ones => from_multiple; got test_yaml_document_stream_skips_null_and_empty_documents (crates/config/src/lib.rs), deserialize_snapshot_yaml (crates/cli/src/verify/find_file.rs), deserialize_test_yaml (crates/cli/src/verify/find_file.rs)",
+      "match length excluding trailing punctuation => get_match_len; got should_skip_trailing (crates/core/src/match_tree/strictness.rs), test_multi_var_match_with_trailing (crates/core/src/meta_var.rs), test_trailing_ellipsis (crates/core/src/match_tree/mod.rs)"
+    ]
+  }
+}

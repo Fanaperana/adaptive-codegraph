@@ -121,6 +121,77 @@ pub fn resolve_symbols<'a>(store: &'a Store, query: &str) -> Vec<&'a Symbol> {
     matches
 }
 
+/// Ranked search: BM25 candidates reranked by symbol kind and by how much
+/// the rest of the code depends on the symbol.
+pub fn search<'a>(
+    store: &'a Store,
+    index: &crate::search::SearchIndex,
+    query: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<(&'a Symbol, f32)>> {
+    let hits = index.search(query, (limit * 5).max(50))?;
+    let mut out: Vec<(&Symbol, f32)> = hits
+        .into_iter()
+        .filter_map(|h| {
+            let s = store.get(&h.id)?;
+            let kind_weight = match s.kind.as_str() {
+                "function" | "method" => 1.0,
+                "class" | "struct" | "interface" | "trait" | "enum" | "type" | "type_alias" => 0.95,
+                "module" | "macro" => 0.85,
+                "field" | "variable" | "constant" | "static" => 0.7,
+                "impl" | "enum_variant" => 0.6,
+                _ => 0.5,
+            };
+            let used_by = store
+                .edges_in(&s.id)
+                .iter()
+                .filter(|(_, e)| e.kind != "imports")
+                .count() as f32;
+            Some((s, h.score * kind_weight * (1.0 + 0.1 * (1.0 + used_by).ln())))
+        })
+        .collect();
+    out.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    out.truncate(limit);
+    Ok(out)
+}
+
+/// Hybrid search: lexical ([`search`]) and embedding similarity fused with
+/// reciprocal-rank fusion. Falls back to lexical search when no semantic
+/// model / vectors are available.
+pub fn hybrid_search<'a>(
+    store: &'a Store,
+    index: &crate::search::SearchIndex,
+    vectors: Option<&crate::embed::VectorIndex>,
+    embedder: Option<&dyn crate::embed::Embedder>,
+    query: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<(&'a Symbol, f32)>> {
+    const POOL: usize = 50;
+    const K: f32 = 60.0;
+    let lexical = search(store, index, query, POOL)?;
+    let (Some(vectors), Some(embedder)) = (vectors, embedder) else {
+        return Ok(lexical.into_iter().take(limit).collect());
+    };
+    if !embedder.is_semantic() || vectors.is_empty() {
+        return Ok(lexical.into_iter().take(limit).collect());
+    }
+    let qv = embedder.embed_one(query)?;
+    let semantic = vectors.search(&qv, POOL);
+
+    let mut fused: std::collections::HashMap<SymbolId, f32> = std::collections::HashMap::new();
+    for (rank, (s, _)) in lexical.iter().enumerate() {
+        *fused.entry(s.id).or_default() += 1.0 / (K + rank as f32 + 1.0);
+    }
+    for (rank, (id, _)) in semantic.iter().enumerate() {
+        *fused.entry(*id).or_default() += 1.0 / (K + rank as f32 + 1.0);
+    }
+    let mut out: Vec<(&Symbol, f32)> =
+        fused.into_iter().filter_map(|(id, s)| store.get(&id).map(|sym| (sym, s))).collect();
+    out.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    out.truncate(limit);
+    Ok(out)
+}
+
 /// Best single match for a name (see [`resolve_symbols`]).
 pub fn resolve_symbol(store: &Store, name: &str) -> Option<SymbolId> {
     resolve_symbols(store, name).first().map(|s| s.id)

@@ -13,15 +13,22 @@
 //! | `f()`                      | enclosing scopes → imports → package → global/guess  |
 //! | `Type::f()` / `mod::f()`   | imported/known type members → module top-level items |
 //! | `x.f()`                    | infer type of `x` (self, bindings, fields, imports)  |
+//! | `class A(B)` / `impl T for`| supertype; member lookups walk supertypes            |
 //!
 //! When the target cannot be pinned down the reference is left unresolved
 //! (or resolved as a low-confidence guess) rather than linked to an
 //! arbitrary same-named symbol.
+//!
+//! Besides the references found in source, resolution derives:
+//! - `imports` edges (file → imported symbol / module file)
+//! - `references` edges (symbol → project types in its signature / locals)
+//! - `overrides` edges (method → the supertype method it overrides/implements)
 
-use crate::extract::treesitter::normalize_type;
+use crate::extract::treesitter::{element_type, normalize_type};
 use crate::extract::LangProfile;
 use crate::model::{confidence, Binding, Edge, FileFacts, Import, RawRef, Symbol, SymbolId};
 use ahash::{AHashMap, AHashSet};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
@@ -37,6 +44,16 @@ pub struct ResolveStats {
     pub ambiguous: usize,
     /// No plausible target found.
     pub unresolved: usize,
+}
+
+/// A package / crate / module root declared by a manifest
+/// (`Cargo.toml`, `go.mod`, `package.json`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Package {
+    /// Import name, e.g. `my_crate`, `example.com/app`, `@scope/ui`.
+    pub name: String,
+    /// Workspace-relative directory.
+    pub dir: String,
 }
 
 /// Names that refer to the current instance / type.
@@ -55,6 +72,7 @@ const COMMON_METHODS: &[&str] = &[
     "default", "build", "load", "save", "dispose", "handle", "execute", "process", "render",
     "create", "lock", "borrow", "borrow_mut", "as_ref", "as_mut", "collect", "fmt", "eq",
     "cmp", "hash", "drop", "deref", "index", "Get", "Set", "Close", "String", "Error",
+    "fire", "event", "register", "dispatch", "notify", "visit", "accept", "match", "test",
 ];
 
 /// What an import binds.
@@ -91,24 +109,23 @@ struct FileInfo<'a> {
     dir: String,
     /// Module path segments, e.g. `src/store/mod.rs` → [src, store].
     segs: Vec<String>,
-    /// Module path joined with '/', for relative-import matching.
-    modpath: String,
     profile: LangProfile,
 }
 
 pub struct Resolver<'a> {
     files: Vec<FileInfo<'a>>,
-    file_idx: AHashMap<&'a str, usize>,
     syms: AHashMap<SymbolId, &'a Symbol>,
     sym_file: AHashMap<SymbolId, usize>,
     /// (owner type name, member name) → members.
     members: AHashMap<(&'a str, &'a str), Vec<SymbolId>>,
-    /// parent → children.
-    children: AHashMap<SymbolId, Vec<SymbolId>>,
-    /// Type name → type symbols.
+    /// (parent, name) → children.
+    children: AHashMap<(SymbolId, &'a str), Vec<SymbolId>>,
+    /// Type name → type symbols (incl. impl blocks).
     types: AHashMap<&'a str, Vec<SymbolId>>,
     /// Last module segment → files.
     module_files: AHashMap<String, Vec<usize>>,
+    /// Full module path (`src/store`) → files.
+    modpath_files: AHashMap<String, Vec<usize>>,
     /// Directory → files.
     dir_files: AHashMap<String, Vec<usize>>,
     /// Top-level name → top-level symbols (project-wide).
@@ -117,44 +134,61 @@ pub struct Resolver<'a> {
     methods: AHashMap<&'a str, Vec<SymbolId>>,
     /// (scope, name) → binding.
     bindings: AHashMap<(SymbolId, &'a str), &'a Binding>,
+    /// (owner type, attribute) → `self.x = ...` / `this.x = ...` binding.
+    attrs: AHashMap<(String, String), &'a Binding>,
+    /// Type name → direct supertype names.
+    supers: AHashMap<String, Vec<String>>,
     /// file → local name → import target.
     imports: Vec<AHashMap<&'a str, ImportTarget>>,
+    /// file → glob-imported modules.
+    globs: Vec<Vec<Vec<usize>>>,
+    packages: Vec<Package>,
 }
 
 const MAX_DEPTH: u8 = 4;
 
 impl<'a> Resolver<'a> {
-    pub fn new(facts: &'a BTreeMap<String, FileFacts>, profiles: &HashMap<String, LangProfile>) -> Self {
+    pub fn new(
+        facts: &'a BTreeMap<String, FileFacts>,
+        profiles: &HashMap<String, LangProfile>,
+        packages: &[Package],
+    ) -> Self {
         let mut r = Resolver {
             files: Vec::with_capacity(facts.len()),
-            file_idx: AHashMap::new(),
             syms: AHashMap::new(),
             sym_file: AHashMap::new(),
             members: AHashMap::new(),
             children: AHashMap::new(),
             types: AHashMap::new(),
             module_files: AHashMap::new(),
+            modpath_files: AHashMap::new(),
             dir_files: AHashMap::new(),
             top_level: AHashMap::new(),
             methods: AHashMap::new(),
             bindings: AHashMap::new(),
+            attrs: AHashMap::new(),
+            supers: AHashMap::new(),
             imports: Vec::new(),
+            globs: Vec::new(),
+            packages: {
+                let mut p = packages.to_vec();
+                p.sort_by(|a, b| b.name.len().cmp(&a.name.len()));
+                p
+            },
         };
 
         for (fi, f) in facts.values().enumerate() {
             let profile = profiles.get(&f.lang).cloned().unwrap_or_default();
             let (dir, segs) = module_segments(&f.file, &profile);
-            let modpath = segs.join("/");
-            r.file_idx.insert(f.file.as_str(), fi);
             r.dir_files.entry(dir.clone()).or_default().push(fi);
             if let Some(last) = segs.last() {
                 r.module_files.entry(last.clone()).or_default().push(fi);
             }
+            r.modpath_files.entry(segs.join("/")).or_default().push(fi);
             r.files.push(FileInfo {
                 facts: f,
                 dir,
                 segs,
-                modpath,
                 profile,
             });
 
@@ -163,7 +197,7 @@ impl<'a> Resolver<'a> {
                 r.syms.insert(s.id, s);
                 r.sym_file.insert(s.id, fi);
                 if let Some(p) = s.parent {
-                    r.children.entry(p).or_default().push(s.id);
+                    r.children.entry((p, s.name.as_str())).or_default().push(s.id);
                     if Some(p) == file_sym && s.kind != "file" {
                         r.top_level.entry(s.name.as_str()).or_default().push(s.id);
                     }
@@ -183,77 +217,185 @@ impl<'a> Resolver<'a> {
             }
         }
 
+        // `self.x = ...` / `this.x = ...` become attributes of the enclosing type.
+        let mut attrs = AHashMap::new();
+        for f in facts.values() {
+            for b in &f.bindings {
+                let Some((obj, attr)) = b.name.split_once('.') else { continue };
+                if SELF_NAMES.contains(&obj) && is_ident(attr) {
+                    if let Some(owner) = r.enclosing_type(b.scope) {
+                        attrs.entry((owner.to_string(), attr.to_string())).or_insert(b);
+                    }
+                }
+            }
+        }
+        r.attrs = attrs;
+
+        // Imports (needed by everything below).
         let mut imports = Vec::with_capacity(r.files.len());
+        let mut globs = Vec::with_capacity(r.files.len());
         for fi in 0..r.files.len() {
             let mut map = AHashMap::new();
+            let mut g = Vec::new();
             for imp in &r.files[fi].facts.imports {
-                let t = r.resolve_import(fi, imp);
+                if imp.local == "*" {
+                    let files = r.resolve_module(fi, &imp.path);
+                    if !files.is_empty() {
+                        g.push(files);
+                    }
+                    continue;
+                }
+                let t = r.resolve_import(fi, imp, 0);
                 map.insert(imp.local.as_str(), t);
             }
             imports.push(map);
+            globs.push(g);
         }
         r.imports = imports;
+        r.globs = globs;
+
+        // Supertypes, from `inherits` / `implements` references.
+        let mut supers: AHashMap<String, Vec<String>> = AHashMap::new();
+        for (fi, info) in r.files.iter().enumerate() {
+            for rf in &info.facts.refs {
+                if !is_super_kind(&rf.kind) {
+                    continue;
+                }
+                let Some(from) = r.sym(rf.from) else { continue };
+                let child = from.name.clone();
+                let parent = match r.resolve_type_ref(fi, rf) {
+                    Target::Sym(id, _) => r.sym(id).map(|s| s.name.clone()),
+                    _ => None,
+                }
+                .unwrap_or_else(|| rf.name.clone());
+                if parent != child {
+                    let v = supers.entry(child).or_default();
+                    if !v.contains(&parent) {
+                        v.push(parent);
+                    }
+                }
+            }
+        }
+        r.supers = supers;
         r
     }
 
     /// Resolve every raw reference and import into edges.
     pub fn resolve_all(&self) -> (Vec<Edge>, ResolveStats) {
+        type Out = (Vec<(SymbolId, SymbolId, String, u8, u32)>, ResolveStats);
+        let per_file: Vec<Out> = (0..self.files.len())
+            .into_par_iter()
+            .map(|fi| self.resolve_file(fi))
+            .collect();
+
         let mut stats = ResolveStats::default();
-        let mut merged: AHashMap<(SymbolId, SymbolId, &str), Edge> = AHashMap::new();
-        let mut add = |from: SymbolId, to: SymbolId, kind: &'a str, conf: u8, line: u32| {
-            merged
-                .entry((from, to, kind))
-                .and_modify(|e| {
-                    e.confidence = e.confidence.max(conf);
-                    e.line = e.line.min(line);
-                    e.count += 1;
-                })
-                .or_insert(Edge {
-                    from,
-                    to,
-                    kind: kind.to_string(),
-                    confidence: conf,
-                    line,
-                    count: 1,
-                });
-        };
-
-        for (fi, info) in self.files.iter().enumerate() {
-            // Import edges: file → imported symbol / module file.
-            if let Some(file_sym) = info.facts.symbols.first() {
-                for imp in &info.facts.imports {
-                    match self.imports[fi].get(imp.local.as_str()) {
-                        Some(ImportTarget::Symbol(id)) => add(file_sym.id, *id, "imports", 3, imp.line),
-                        Some(ImportTarget::Module(files)) => {
-                            for &f in files {
-                                if let Some(t) = self.files[f].facts.symbols.first() {
-                                    if t.id != file_sym.id {
-                                        add(file_sym.id, t.id, "imports", 3, imp.line);
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+        let mut merged: AHashMap<(SymbolId, SymbolId, String), Edge> = AHashMap::new();
+        for (edges, s) in per_file {
+            stats.refs += s.refs;
+            for i in 0..4 {
+                stats.resolved[i] += s.resolved[i];
             }
-
-            for r in &info.facts.refs {
-                stats.refs += 1;
-                match self.resolve_ref(fi, r) {
-                    Target::Sym(to, conf) => {
-                        stats.resolved[conf as usize] += 1;
-                        add(r.from, to, r.kind.as_str(), conf, r.line);
-                    }
-                    Target::External => stats.external += 1,
-                    Target::Ambiguous => stats.ambiguous += 1,
-                    Target::Unknown => stats.unresolved += 1,
+            stats.external += s.external;
+            stats.ambiguous += s.ambiguous;
+            stats.unresolved += s.unresolved;
+            for (from, to, kind, conf, line) in edges {
+                if from == to && kind != "calls" {
+                    continue;
                 }
+                merged
+                    .entry((from, to, kind.clone()))
+                    .and_modify(|e| {
+                        e.confidence = e.confidence.max(conf);
+                        e.line = e.line.min(line);
+                        e.count += 1;
+                    })
+                    .or_insert(Edge {
+                        from,
+                        to,
+                        kind,
+                        confidence: conf,
+                        line,
+                        count: 1,
+                    });
             }
         }
         let mut edges: Vec<Edge> = merged.into_values().collect();
         edges.sort_by(|a, b| (a.from, a.to, &a.kind).cmp(&(b.from, b.to, &b.kind)));
         (edges, stats)
+    }
+
+    fn resolve_file(&self, fi: usize) -> (Vec<(SymbolId, SymbolId, String, u8, u32)>, ResolveStats) {
+        let info = &self.files[fi];
+        let mut out = Vec::new();
+        let mut stats = ResolveStats::default();
+
+        // Import edges: file → imported symbol / module file.
+        if let Some(file_sym) = info.facts.symbols.first() {
+            for imp in &info.facts.imports {
+                match self.imports[fi].get(imp.local.as_str()) {
+                    Some(ImportTarget::Symbol(id)) => {
+                        out.push((file_sym.id, *id, "imports".into(), 3, imp.line))
+                    }
+                    Some(ImportTarget::Module(files)) => {
+                        for &f in files {
+                            if let Some(t) = self.files[f].facts.symbols.first() {
+                                out.push((file_sym.id, t.id, "imports".into(), 3, imp.line));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // References found in source.
+        for r in &info.facts.refs {
+            stats.refs += 1;
+            let t = if is_super_kind(&r.kind) || r.kind == "references" {
+                self.resolve_type_ref(fi, r)
+            } else {
+                self.resolve_ref(fi, r)
+            };
+            match t {
+                Target::Sym(to, conf) => {
+                    stats.resolved[conf as usize] += 1;
+                    out.push((r.from, to, r.kind.clone(), conf, r.line));
+                }
+                Target::External => stats.external += 1,
+                Target::Ambiguous => stats.ambiguous += 1,
+                Target::Unknown => stats.unresolved += 1,
+            }
+        }
+
+        // Derived: type references from declared types and typed locals.
+        for s in &info.facts.symbols {
+            if let Some(t) = &s.type_hint {
+                for name in type_names_in(t) {
+                    if let Target::Sym(to, conf) = self.resolve_type_name(fi, s.id, &name) {
+                        out.push((s.id, to, "references".into(), conf, s.span.start_line));
+                    }
+                }
+            }
+            // Derived: method overrides / implements a supertype method.
+            if s.kind == "method" {
+                if let Some(owner) = s.owner() {
+                    if let Some(target) = self.find_in_supers(owner, &s.name) {
+                        out.push((s.id, target, "overrides".into(), 3, s.span.start_line));
+                    }
+                }
+            }
+        }
+        for b in &info.facts.bindings {
+            if let Some(t) = &b.type_name {
+                let line = self.sym(b.scope).map(|s| s.span.start_line).unwrap_or(0);
+                for name in type_names_in(t) {
+                    if let Target::Sym(to, conf) = self.resolve_type_name(fi, b.scope, &name) {
+                        out.push((b.scope, to, "references".into(), conf, line));
+                    }
+                }
+            }
+        }
+        (out, stats)
     }
 
     fn resolve_ref(&self, fi: usize, r: &RawRef) -> Target {
@@ -285,7 +427,7 @@ impl<'a> Resolver<'a> {
     /// The type that `self`/`this` refers to inside `id`.
     fn enclosing_type(&self, id: SymbolId) -> Option<&'a str> {
         for s in self.ancestors(id) {
-            if s.kind == "method" {
+            if s.kind == "method" || s.kind == "field" {
                 if let Some(o) = s.owner() {
                     return Some(o);
                 }
@@ -313,34 +455,57 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Top-level symbols named `name` in the given files.
-    fn top_level_in(&self, files: &[usize], name: &str) -> Vec<SymbolId> {
-        self.top_level
-            .get(name)
-            .map(|v| {
-                v.iter()
-                    .copied()
-                    .filter(|id| self.sym_file.get(id).map(|f| files.contains(f)).unwrap_or(false))
-                    .collect()
-            })
-            .unwrap_or_default()
+    fn file_of(&self, id: &SymbolId) -> Option<usize> {
+        self.sym_file.get(id).copied()
     }
 
-    /// Members of type `owner` called `name` that can be called.
+    /// Top-level symbols named `name` in the given files.
+    fn top_level_in(&self, files: &[usize], name: &str) -> Vec<SymbolId> {
+        let Some(v) = self.top_level.get(name) else { return Vec::new() };
+        v.iter()
+            .copied()
+            .filter(|id| self.file_of(id).map(|f| files.contains(&f)).unwrap_or(false))
+            .collect()
+    }
+
+    /// Direct members of type `owner` called `name` that can be called.
     fn callable_members(&self, owner: &str, name: &str) -> Vec<SymbolId> {
-        self.members
-            .get(&(owner, name))
-            .map(|v| {
-                v.iter()
-                    .copied()
-                    .filter(|id| {
-                        self.sym(*id)
-                            .map(|s| matches!(s.kind.as_str(), "method" | "function" | "class" | "struct"))
-                            .unwrap_or(false)
-                    })
-                    .collect()
+        let Some(v) = self.members.get(&(owner, name)) else { return Vec::new() };
+        v.iter()
+            .copied()
+            .filter(|id| {
+                self.sym(*id)
+                    .map(|s| matches!(s.kind.as_str(), "method" | "function" | "class" | "struct"))
+                    .unwrap_or(false)
             })
-            .unwrap_or_default()
+            .collect()
+    }
+
+    /// Supertypes of `owner`, nearest first (breadth-first, cycle-safe).
+    fn supertypes(&self, owner: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut queue: std::collections::VecDeque<String> =
+            self.supers.get(owner).cloned().unwrap_or_default().into();
+        while let Some(t) = queue.pop_front() {
+            if t == owner || out.contains(&t) || out.len() > 32 {
+                continue;
+            }
+            if let Some(next) = self.supers.get(&t) {
+                queue.extend(next.iter().cloned());
+            }
+            out.push(t);
+        }
+        out
+    }
+
+    /// A callable member `name` in one of `owner`'s supertypes.
+    fn find_in_supers(&self, owner: &str, name: &str) -> Option<SymbolId> {
+        for t in self.supertypes(owner) {
+            if let Some(&id) = self.callable_members(&t, name).first() {
+                return Some(id);
+            }
+        }
+        None
     }
 
     /// Pick from candidates: prefer the caller's file, then its directory.
@@ -349,15 +514,14 @@ impl<'a> Resolver<'a> {
             0 => Target::Unknown,
             1 => Target::Sym(cands[0], conf),
             _ => {
-                let same_file: Vec<_> =
-                    cands.iter().filter(|id| self.sym_file.get(id) == Some(&fi)).collect();
+                let same_file: Vec<_> = cands.iter().filter(|id| self.file_of(id) == Some(fi)).collect();
                 if same_file.len() == 1 {
                     return Target::Sym(*same_file[0], conf.min(confidence::INFERRED));
                 }
                 let dir = &self.files[fi].dir;
                 let same_dir: Vec<_> = cands
                     .iter()
-                    .filter(|id| self.sym_file.get(id).map(|f| &self.files[*f].dir == dir).unwrap_or(false))
+                    .filter(|id| self.file_of(id).map(|f| &self.files[f].dir == dir).unwrap_or(false))
                     .collect();
                 if same_dir.len() == 1 {
                     return Target::Sym(*same_dir[0], conf.min(confidence::INFERRED));
@@ -375,19 +539,14 @@ impl<'a> Resolver<'a> {
             if anc.is_type() {
                 continue; // members need an explicit receiver
             }
-            if let Some(kids) = self.children.get(&anc.id) {
-                let found: Vec<SymbolId> = kids
-                    .iter()
-                    .copied()
-                    .filter(|k| self.sym(*k).map(|s| s.name == name && self.acceptable(s, tk)).unwrap_or(false))
-                    .collect();
-                if !found.is_empty() {
-                    return Target::Sym(found[0], confidence::CERTAIN);
+            if let Some(kids) = self.children.get(&(anc.id, name)) {
+                if let Some(k) = kids.iter().find(|k| self.sym(**k).map(|s| self.acceptable(s, tk)).unwrap_or(false)) {
+                    return Target::Sym(*k, confidence::CERTAIN);
                 }
             }
         }
 
-        // 2. Imports.
+        // 2. Imports, then glob imports.
         match self.imports[fi].get(name) {
             Some(ImportTarget::Symbol(id)) => {
                 if let Some(s) = self.sym(*id) {
@@ -400,6 +559,16 @@ impl<'a> Resolver<'a> {
             Some(ImportTarget::External) => return Target::External,
             Some(ImportTarget::Module(_)) => return Target::Unknown,
             Some(ImportTarget::Unknown) | None => {}
+        }
+        for files in &self.globs[fi] {
+            let c: Vec<SymbolId> = self
+                .top_level_in(files, name)
+                .into_iter()
+                .filter(|id| self.sym(*id).map(|s| self.acceptable(s, tk)).unwrap_or(false))
+                .collect();
+            if !c.is_empty() {
+                return self.pick(fi, &c, confidence::CERTAIN);
+            }
         }
 
         let profile = &self.files[fi].profile;
@@ -415,7 +584,7 @@ impl<'a> Resolver<'a> {
             let in_pkg: Vec<SymbolId> = all
                 .iter()
                 .copied()
-                .filter(|id| self.sym_file.get(id).map(|f| &self.files[*f].dir == dir).unwrap_or(false))
+                .filter(|id| self.file_of(id).map(|f| &self.files[f].dir == dir).unwrap_or(false))
                 .collect();
             if !in_pkg.is_empty() {
                 return self.pick(fi, &in_pkg, confidence::CERTAIN);
@@ -496,7 +665,7 @@ impl<'a> Resolver<'a> {
         Target::External
     }
 
-    /// Callable member `name` of a named type.
+    /// Callable member `name` of a named type (or of its supertypes).
     fn member_of(&self, fi: usize, owner: &str, name: &str) -> Target {
         let c = self.callable_members(owner, name);
         if !c.is_empty() {
@@ -506,8 +675,11 @@ impl<'a> Resolver<'a> {
                 t => t,
             };
         }
+        if let Some(id) = self.find_in_supers(owner, name) {
+            return Target::Sym(id, confidence::CERTAIN);
+        }
         if self.types.contains_key(owner) {
-            Target::Unknown // project type, member not found (inherited / trait)
+            Target::Unknown // project type, member not found (external base, macro, ...)
         } else {
             Target::External
         }
@@ -535,11 +707,10 @@ impl<'a> Resolver<'a> {
                 if COMMON_METHODS.contains(&name) {
                     return Target::Ambiguous;
                 }
-                let c = self.methods.get(name).cloned().unwrap_or_default();
-                match c.len() {
-                    0 => Target::Unknown,
-                    1 => Target::Sym(c[0], confidence::GUESS),
-                    _ => Target::Ambiguous,
+                match self.methods.get(name).map(|v| v.as_slice()) {
+                    None | Some([]) => Target::Unknown,
+                    Some([only]) => Target::Sym(*only, confidence::GUESS),
+                    Some(_) => Target::Ambiguous,
                 }
             }
         }
@@ -552,11 +723,19 @@ impl<'a> Resolver<'a> {
         }
         let e = expr.trim().trim_start_matches(['&', '*']).trim();
         let e = e.strip_prefix("mut ").unwrap_or(e).trim();
+        let e = e.strip_prefix('(').and_then(|x| x.strip_suffix(')')).unwrap_or(e).trim();
 
         if SELF_NAMES.contains(&e) {
             return match self.enclosing_type(from) {
                 Some(t) => RecvType::Type(t.to_string()),
                 None => RecvType::Unknown,
+            };
+        }
+        // `super()` (Python), `super` (JS/TS/Java): the first supertype.
+        if e == "super" || e.starts_with("super(") {
+            return match self.enclosing_type(from).map(|t| self.supertypes(t)) {
+                Some(s) if !s.is_empty() => RecvType::Type(s[0].clone()),
+                _ => RecvType::Unknown,
             };
         }
 
@@ -588,9 +767,9 @@ impl<'a> Resolver<'a> {
 
         // `a.b` (field access): resolve `a`, then the declared type of field `b`.
         if let Some((head, field)) = e.rsplit_once('.') {
-            if is_ident(field) && !head.contains(['(', '[']) {
+            if is_ident(field) && !head.contains(['(', '[']) || head.starts_with("super(") {
                 return match self.type_of(fi, from, head, depth + 1) {
-                    RecvType::Type(t) => self.field_type(&t, field),
+                    RecvType::Type(t) => self.field_type(fi, &t, field, depth + 1),
                     RecvType::Module(files) => {
                         let c = self.top_level_in(&files, field);
                         match c.first().and_then(|id| self.sym(*id)) {
@@ -606,24 +785,79 @@ impl<'a> Resolver<'a> {
         RecvType::Unknown
     }
 
-    fn field_type(&self, owner: &str, field: &str) -> RecvType {
-        let Some(c) = self.members.get(&(owner, field)) else {
-            return if self.types.contains_key(owner) { RecvType::Unknown } else { RecvType::External };
-        };
-        for id in c {
-            if let Some(s) = self.sym(*id) {
-                if let Some(t) = &s.type_hint {
-                    if t == "Self" {
-                        return RecvType::Type(owner.to_string());
+    /// Declared (raw) type of field `field` on `owner` or its supertypes.
+    fn field_raw_type(&self, owner: &str, field: &str) -> Option<(String, Option<&'a Binding>)> {
+        let mut chain = vec![owner.to_string()];
+        chain.extend(self.supertypes(owner));
+        for t in &chain {
+            if let Some(c) = self.members.get(&(t.as_str(), field)) {
+                for id in c {
+                    let Some(s) = self.sym(*id) else { continue };
+                    if let Some(h) = &s.type_hint {
+                        let h = if h == "Self" { t.clone() } else { h.clone() };
+                        return Some((h, None));
                     }
-                    return RecvType::Type(t.clone());
+                    // Field initializer: `private x = make()`.
+                    if let Some(b) = self.bindings.get(&(s.id, s.name.as_str())) {
+                        return Some((String::new(), Some(*b)));
+                    }
                 }
             }
+            if let Some(b) = self.attrs.get(&(t.clone(), field.to_string())) {
+                return Some((String::new(), Some(*b)));
+            }
         }
-        RecvType::Unknown
+        None
+    }
+
+    fn field_type(&self, fi: usize, owner: &str, field: &str, depth: u8) -> RecvType {
+        match self.field_raw_type(owner, field) {
+            Some((_, Some(b))) => self.type_of_binding(fi, b, depth + 1),
+            Some((raw, None)) => match normalize_type(&raw) {
+                Some(t) => RecvType::Type(t),
+                None => RecvType::Unknown,
+            },
+            None if self.types.contains_key(owner) => RecvType::Unknown,
+            None => RecvType::External,
+        }
+    }
+
+    /// Raw declared type of an expression, used for loop element types.
+    fn raw_type_of(&self, fi: usize, from: SymbolId, expr: &str, depth: u8) -> Option<String> {
+        if depth > MAX_DEPTH {
+            return None;
+        }
+        let e = expr.trim().trim_start_matches(['&', '*']).trim();
+        let e = e.strip_prefix("mut ").unwrap_or(e).trim();
+        let e = e.split(".iter()").next().unwrap_or(e);
+        let e = e.split(".values()").next().unwrap_or(e).trim();
+        if is_ident(e) {
+            let b = self.binding(from, e)?;
+            if let Some(t) = &b.type_name {
+                return Some(t.clone());
+            }
+            if let Some(call) = &b.call {
+                if let Target::Sym(id, _) = self.resolve_call_expr(fi, b.scope, call, depth + 1) {
+                    return self.sym(id)?.type_hint.clone();
+                }
+            }
+            return None;
+        }
+        let (head, field) = e.rsplit_once('.')?;
+        if !is_ident(field) {
+            return None;
+        }
+        let RecvType::Type(t) = self.type_of(fi, from, head, depth + 1) else { return None };
+        match self.field_raw_type(&t, field)? {
+            (raw, None) => Some(raw),
+            (_, Some(b)) => b.type_name.clone(),
+        }
     }
 
     fn type_of_binding(&self, fi: usize, b: &Binding, depth: u8) -> RecvType {
+        if depth > MAX_DEPTH {
+            return RecvType::Unknown;
+        }
         if let Some(t) = b.type_name.as_deref().and_then(normalize_type) {
             if t == "Self" {
                 return match self.enclosing_type(b.scope) {
@@ -633,6 +867,12 @@ impl<'a> Resolver<'a> {
             }
             return RecvType::Type(t);
         }
+        if let Some(iter) = &b.iter {
+            return match self.raw_type_of(fi, b.scope, iter, depth + 1).and_then(|t| element_type(&t)) {
+                Some(t) => RecvType::Type(t),
+                None => RecvType::Unknown,
+            };
+        }
         if let Some(call) = &b.call {
             let target = self.resolve_call_expr(fi, b.scope, call, depth + 1);
             return match target {
@@ -641,7 +881,7 @@ impl<'a> Resolver<'a> {
                     if s.is_type() {
                         return RecvType::Type(s.name.clone());
                     }
-                    match s.type_hint.as_deref() {
+                    match s.type_hint.as_deref().and_then(normalize_type).as_deref() {
                         Some("Self") => match s.owner() {
                             Some(o) => RecvType::Type(o.to_string()),
                             None => RecvType::Unknown,
@@ -675,17 +915,73 @@ impl<'a> Resolver<'a> {
         Target::Unknown
     }
 
+    // ── type references ────────────────────────────────────────────────
+
+    /// Resolve a type name as seen from `from` (scopes, imports, package,
+    /// then a unique project-wide type).
+    fn resolve_type_name(&self, fi: usize, from: SymbolId, name: &str) -> Target {
+        let is_target = |id: &SymbolId| self.sym(*id).map(|s| s.is_type() && s.kind != "impl").unwrap_or(false);
+        for anc in self.ancestors(from) {
+            if let Some(kids) = self.children.get(&(anc.id, name)) {
+                if let Some(k) = kids.iter().find(|k| is_target(k)) {
+                    return Target::Sym(*k, confidence::CERTAIN);
+                }
+            }
+        }
+        match self.imports[fi].get(name) {
+            Some(ImportTarget::Symbol(id)) if is_target(id) => return Target::Sym(*id, confidence::CERTAIN),
+            Some(ImportTarget::External) => return Target::External,
+            _ => {}
+        }
+        for files in &self.globs[fi] {
+            let c: Vec<SymbolId> = self.top_level_in(files, name).into_iter().filter(|id| is_target(id)).collect();
+            if !c.is_empty() {
+                return self.pick(fi, &c, confidence::CERTAIN);
+            }
+        }
+        let Some(all) = self.types.get(name) else { return Target::External };
+        let all: Vec<SymbolId> = all.iter().copied().filter(|id| is_target(id)).collect();
+        // Types are often reachable through re-exports or glob imports we
+        // can't see, so a unique project type is a fair inference.
+        match self.pick(fi, &all, confidence::INFERRED) {
+            Target::Sym(id, c) => Target::Sym(id, c.min(confidence::INFERRED)),
+            t => t,
+        }
+    }
+
+    /// Resolve an `inherits` / `implements` / `references` reference.
+    fn resolve_type_ref(&self, fi: usize, r: &RawRef) -> Target {
+        let q = r.qualifier.as_deref().or(r.receiver.as_deref());
+        if let Some(q) = q {
+            let q = strip_generics(q);
+            let last = q.rsplit(|c| c == ':' || c == '.').next().unwrap_or(&q);
+            let files = match self.imports[fi].get(last) {
+                Some(ImportTarget::Module(files)) => files.clone(),
+                Some(ImportTarget::External) => return Target::External,
+                _ => self.resolve_module(fi, &q),
+            };
+            if !files.is_empty() {
+                let c: Vec<SymbolId> = self
+                    .top_level_in(&files, &r.name)
+                    .into_iter()
+                    .filter(|id| self.sym(*id).map(|s| s.is_type()).unwrap_or(false))
+                    .collect();
+                return if c.is_empty() { Target::Unknown } else { self.pick(fi, &c, confidence::CERTAIN) };
+            }
+        }
+        self.resolve_type_name(fi, r.from, &r.name)
+    }
+
     // ── imports & modules ──────────────────────────────────────────────
 
-    fn resolve_import(&self, fi: usize, imp: &Import) -> ImportTarget {
+    fn resolve_import(&self, fi: usize, imp: &Import, depth: u8) -> ImportTarget {
         let files = self.resolve_module(fi, &imp.path);
         let Some(item) = &imp.item else {
             return if files.is_empty() { ImportTarget::External } else { ImportTarget::Module(files) };
         };
         if !files.is_empty() {
-            let c = self.top_level_in(&files, item);
-            if let Some(id) = c.first() {
-                return ImportTarget::Symbol(*id);
+            if let Some(t) = self.find_exported(&files, item, depth) {
+                return t;
             }
         }
         // `from . import other`, `use crate::util;`: the item is a module.
@@ -697,8 +993,38 @@ impl<'a> Resolver<'a> {
         if files.is_empty() {
             ImportTarget::External
         } else {
-            ImportTarget::Unknown // e.g. a re-export we can't follow
+            ImportTarget::Unknown
         }
+    }
+
+    /// Find `item` exported by `files`: a top-level symbol, or a re-export
+    /// (`pub use`, `export { x } from`, `from .x import y` in `__init__`).
+    fn find_exported(&self, files: &[usize], item: &str, depth: u8) -> Option<ImportTarget> {
+        let c = self.top_level_in(files, item);
+        if let Some(id) = c.first() {
+            return Some(ImportTarget::Symbol(*id));
+        }
+        if depth >= 3 {
+            return None;
+        }
+        for &f in files {
+            for imp in &self.files[f].facts.imports {
+                if imp.local == item {
+                    match self.resolve_import(f, imp, depth + 1) {
+                        t @ (ImportTarget::Symbol(_) | ImportTarget::Module(_)) => return Some(t),
+                        _ => {}
+                    }
+                } else if imp.local == "*" {
+                    let g = self.resolve_module(f, &imp.path);
+                    if !g.is_empty() && g != files {
+                        if let Some(t) = self.find_exported(&g, item, depth + 1) {
+                            return Some(t);
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Files implementing the module `path` as seen from file `fi`.
@@ -724,28 +1050,30 @@ impl<'a> Resolver<'a> {
             None
         };
         if let Some(target) = target {
-            let target = strip_ext(&target);
-            let last = target.rsplit('/').next().unwrap_or("").to_string();
-            let mut out: Vec<usize> = self
-                .module_files
-                .get(&last)
-                .map(|v| v.iter().copied().filter(|&f| self.files[f].modpath == target).collect())
-                .unwrap_or_default();
-            if out.is_empty() {
-                // a package directory (`__init__.py` / `index.ts` live in it)
-                out = self
-                    .files
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, f)| f.modpath == target)
-                    .map(|(i, _)| i)
-                    .collect();
-            }
-            return out;
+            return self.modpath_files.get(&strip_ext(&target)).cloned().unwrap_or_default();
         }
 
-        // Absolute paths: match module segments by suffix.
+        // Declared packages: `my_crate::store`, `example.com/app/util`, `@scope/ui/x`.
         let p = strip_ext(p);
+        for pkg in &self.packages {
+            let rest = if p == pkg.name {
+                Some("")
+            } else {
+                p.strip_prefix(&pkg.name)
+                    .and_then(|r| r.strip_prefix("::").or_else(|| r.strip_prefix('/')).or_else(|| r.strip_prefix('.')))
+            };
+            let Some(rest) = rest else { continue };
+            let rest_segs: Vec<&str> = rest.split(|c| c == ':' || c == '/' || c == '.').filter(|s| !s.is_empty()).collect();
+            let roots = [pkg.dir.clone(), join_path(&pkg.dir, "src"), join_path(&pkg.dir, "lib")];
+            for root in &roots {
+                let target = join_path(root, &rest_segs.join("/"));
+                if let Some(v) = self.modpath_files.get(&target) {
+                    return v.clone();
+                }
+            }
+        }
+
+        // Otherwise match module segments by suffix.
         let segs: Vec<&str> = p
             .split(|c| c == ':' || c == '.' || c == '/')
             .filter(|s| !s.is_empty() && !matches!(*s, "crate" | "self" | "super" | "@" | "~"))
@@ -780,8 +1108,33 @@ impl<'a> Resolver<'a> {
 pub fn resolve(
     facts: &BTreeMap<String, FileFacts>,
     profiles: &HashMap<String, LangProfile>,
+    packages: &[Package],
 ) -> (Vec<Edge>, ResolveStats) {
-    Resolver::new(facts, profiles).resolve_all()
+    Resolver::new(facts, profiles, packages).resolve_all()
+}
+
+fn is_super_kind(kind: &str) -> bool {
+    kind == "inherits" || kind == "implements"
+}
+
+/// Project-relevant type names inside a type expression:
+/// `HashMap<String, Vec<User>>` → [HashMap, String, Vec, User].
+fn type_names_in(t: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tok in t.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$' || c == ':' || c == '.')) {
+        let tok = tok.trim_matches(|c| c == ':' || c == '.');
+        let name = tok.rsplit(|c| c == ':' || c == '.').next().unwrap_or(tok);
+        if name.is_empty()
+            || !name.chars().next().map(|c| c.is_alphabetic() || c == '_').unwrap_or(false)
+            || matches!(name, "mut" | "dyn" | "impl" | "const" | "readonly" | "Self" | "self" | "typeof" | "keyof" | "in" | "extends")
+        {
+            continue;
+        }
+        if !out.iter().any(|x| x == name) {
+            out.push(name.to_string());
+        }
+    }
+    out
 }
 
 // ── path helpers ───────────────────────────────────────────────────────
@@ -924,5 +1277,14 @@ mod tests {
         assert_eq!(strip_generics("Vec::<u8>::new"), "Vec::new");
         assert_eq!(join_module_path(".", "other", "python"), ".other");
         assert_eq!(join_module_path("crate", "util", "rust"), "crate::util");
+    }
+
+    #[test]
+    fn type_names_in_generic() {
+        assert_eq!(
+            type_names_in("HashMap<String, Vec<crate::User>>"),
+            vec!["HashMap", "String", "Vec", "User"]
+        );
+        assert_eq!(type_names_in("&mut Self"), Vec::<String>::new());
     }
 }

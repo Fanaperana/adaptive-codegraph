@@ -18,8 +18,9 @@
 //!   edge kind (default `calls`)
 //! - `@import.path` with `@import.name` / `@import.alias` / `@import.default`,
 //!   or `@import.module` (+ optional `@import.alias`) for whole-module imports
-//! - `@binding.name` with `@binding.type` or `@binding.call` — local
-//!   variables/parameters whose type can be inferred
+//! - `@binding.name` with `@binding.type`, `@binding.call` or
+//!   `@binding.iter` (loop variable over a collection) — local variables,
+//!   parameters, and `self.x` / `this.x` attributes whose type can be inferred
 
 use crate::extract::{Extractor, LangProfile};
 use crate::model::{Binding, ExtractionResult, Import, RawRef, Span, Symbol, SymbolId};
@@ -59,9 +60,11 @@ struct EdgeCaps {
     import_alias: Option<u32>,
     import_module: Option<u32>,
     import_default: Option<u32>,
+    import_glob: Option<u32>,
     binding_name: Option<u32>,
     binding_type: Option<u32>,
     binding_call: Option<u32>,
+    binding_iter: Option<u32>,
 }
 
 /// A generic extractor powered by tree-sitter + query files.
@@ -97,9 +100,11 @@ impl TreeSitterExtractor {
             import_alias: e("import.alias"),
             import_module: e("import.module"),
             import_default: e("import.default"),
+            import_glob: e("import.glob"),
             binding_name: e("binding.name"),
             binding_type: e("binding.type"),
             binding_call: e("binding.call"),
+            binding_iter: e("binding.iter"),
         };
 
         Ok(Self {
@@ -139,7 +144,7 @@ impl TreeSitterExtractor {
             let def = get(self.sym_caps.def).unwrap_or(name_node);
             let explicit_kind = property(&self.symbol_query, m.pattern_index, "kind");
             let type_hint = get(self.sym_caps.type_)
-                .and_then(|n| normalize_type(&text(n, src)))
+                .and_then(|n| clean_type(&text(n, src)))
                 .or_else(|| arrow_return_type(def, src));
             let container = get(self.sym_caps.container).map(|n| text(n, src));
 
@@ -307,6 +312,16 @@ impl TreeSitterExtractor {
             let items = all(c.import_name);
             let default = one(c.import_default);
             let module = one(c.import_module);
+            if let Some(g) = one(c.import_glob) {
+                // `use a::*`, `from a import *`, `export * from "./a"`
+                result.imports.push(Import {
+                    local: "*".into(),
+                    path: strip_quotes(&text(g, src)),
+                    item: None,
+                    line: g.start_position().row as u32,
+                });
+                continue;
+            }
             if path.is_some() || module.is_some() {
                 let line = m.captures[0].node.start_position().row as u32;
                 if let Some(module) = module {
@@ -358,9 +373,10 @@ impl TreeSitterExtractor {
 
             // Bindings
             if let Some(bn) = one(c.binding_name) {
-                let type_name = one(c.binding_type).map(|n| text(n, src));
+                let type_name = one(c.binding_type).and_then(|n| clean_type(&text(n, src)));
                 let call = one(c.binding_call).map(|n| text(n, src));
-                if type_name.is_none() && call.is_none() {
+                let iter = one(c.binding_iter).map(|n| text(n, src));
+                if type_name.is_none() && call.is_none() && iter.is_none() {
                     continue;
                 }
                 result.bindings.push(Binding {
@@ -368,6 +384,7 @@ impl TreeSitterExtractor {
                     name: text(bn, src),
                     type_name,
                     call,
+                    iter,
                 });
             }
         }
@@ -604,7 +621,61 @@ fn arrow_return_type(def: tree_sitter::Node, src: &[u8]) -> Option<String> {
     };
     let v = decl.child_by_field_name("value")?;
     let rt = v.child_by_field_name("return_type")?;
-    normalize_type(&text(rt, src))
+    clean_type(&text(rt, src))
+}
+
+/// A type annotation as written, minus `:` / `->` and extra whitespace.
+pub fn clean_type(t: &str) -> Option<String> {
+    let t = t.trim().trim_start_matches(':').trim().trim_start_matches("->").trim();
+    let t: String = t.split_whitespace().collect::<Vec<_>>().join(" ");
+    if t.is_empty() || t.len() > 160 {
+        None
+    } else {
+        Some(t)
+    }
+}
+
+/// Collection types whose element type is what a loop variable gets.
+const COLLECTIONS: &[&str] = &[
+    "Vec", "VecDeque", "HashSet", "BTreeSet", "LinkedList", "BinaryHeap", "Set", "Array",
+    "ReadonlyArray", "List", "list", "Iterable", "Iterator", "IntoIterator", "Sequence",
+    "Collection", "set", "tuple", "Tuple", "IntoIter", "Iter", "frozenset", "Generator",
+    "AsyncIterable", "AsyncIterator",
+];
+
+/// Element type of a collection type: `Vec<Box<dyn Shape>>` → `Shape`,
+/// `Listener[]` → `Listener`, `&[Circle]` → `Circle`, `list[User]` → `User`.
+pub fn element_type(t: &str) -> Option<String> {
+    let mut s = t.trim();
+    loop {
+        let before = s;
+        for p in ["&", "mut ", "readonly "] {
+            s = s.strip_prefix(p).unwrap_or(s).trim_start();
+        }
+        if s.starts_with('\'') {
+            s = s.split_once(' ').map(|x| x.1).unwrap_or("");
+        }
+        if s == before {
+            break;
+        }
+    }
+    if let Some(inner) = s.strip_suffix("[]") {
+        return normalize_type(inner);
+    }
+    if let Some(inner) = s.strip_prefix("[]") {
+        return normalize_type(inner);
+    }
+    if let Some(inner) = s.strip_prefix('[').and_then(|x| x.strip_suffix(']')) {
+        // Rust slices / arrays: `[T]`, `[T; N]`.
+        return normalize_type(inner.split(';').next().unwrap_or(inner));
+    }
+    let open = s.find(['<', '['])?;
+    let base = s[..open].rsplit(|c| c == ':' || c == '.').next().unwrap_or("");
+    if !COLLECTIONS.contains(&base) {
+        return None;
+    }
+    let inner = &s[open + 1..s.rfind(['>', ']'])?];
+    normalize_type(inner)
 }
 
 /// Infer a kind string from the tree-sitter node type.
@@ -910,6 +981,17 @@ mod tests {
         assert_eq!(normalize_type("&'a str").as_deref(), Some("str"));
         assert_eq!(normalize_type("-> Self").as_deref(), Some("Self"));
         assert_eq!(normalize_type("(a, b)"), None);
+    }
+
+    #[test]
+    fn element_type_cases() {
+        assert_eq!(element_type("Vec<Box<dyn Shape>>").as_deref(), Some("Shape"));
+        assert_eq!(element_type("Listener[]").as_deref(), Some("Listener"));
+        assert_eq!(element_type("&[Circle]").as_deref(), Some("Circle"));
+        assert_eq!(element_type("list[User]").as_deref(), Some("User"));
+        assert_eq!(element_type("[]*store.Store").as_deref(), Some("Store"));
+        assert_eq!(element_type("HashMap<String, User>"), None);
+        assert_eq!(element_type("Store"), None);
     }
 
     #[test]

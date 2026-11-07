@@ -41,6 +41,30 @@ struct Args {
     /// Only run fixtures (skip --repo even if given).
     #[arg(long)]
     fixtures_only: bool,
+    /// Search benchmark: repository to index.
+    #[arg(long)]
+    search_repo: Option<PathBuf>,
+    /// Search benchmark: `query => name @ path-substring` lines.
+    #[arg(long)]
+    search_queries: Option<PathBuf>,
+}
+
+#[derive(Serialize, Default, Clone)]
+struct SearchScore {
+    queries: usize,
+    recall_at_1: f64,
+    recall_at_5: f64,
+    recall_at_10: f64,
+    mrr: f64,
+}
+
+#[derive(Serialize)]
+struct SearchReport {
+    repo: String,
+    legacy: SearchScore,
+    current: SearchScore,
+    hybrid: Option<SearchScore>,
+    misses: Vec<String>,
 }
 
 #[derive(Serialize, Default, Clone)]
@@ -103,6 +127,7 @@ struct Report {
     fixtures: Vec<FixtureReport>,
     overall: BTreeMap<String, Accuracy>,
     repos: Vec<RepoReport>,
+    search: Option<SearchReport>,
 }
 
 fn main() -> Result<()> {
@@ -150,11 +175,17 @@ fn main() -> Result<()> {
         }
     }
 
+    let search = match (&args.search_repo, &args.search_queries) {
+        (Some(repo), Some(q)) => Some(run_search(repo, q)?),
+        _ => None,
+    };
+
     let report = Report {
         label: args.label.clone(),
         fixtures,
         overall,
         repos,
+        search,
     };
     print_markdown(&report);
 
@@ -442,6 +473,65 @@ fn run_repo(repo: &Path) -> Result<RepoReport> {
     })
 }
 
+// ── Search ──────────────────────────────────────────────────────────────
+
+fn run_search(repo: &Path, queries: &Path) -> Result<SearchReport> {
+    let repo = repo.canonicalize()?;
+    let tmp = tempfile::tempdir()?;
+    let idx = tmp.path().join("idx");
+    compat::full_index(&repo, &idx)?;
+
+    let text = std::fs::read_to_string(queries)?;
+    let ctx = compat::search_ctx(&idx)?;
+    let mut legacy_ranks = Vec::new();
+    let mut current_ranks = Vec::new();
+    let mut hybrid_ranks = Vec::new();
+    let mut misses = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (q, want) = line.split_once("=>").context("missing =>")?;
+        let (name, path) = want.split_once('@').context("missing @")?;
+        let (q, name, path) = (q.trim(), name.trim(), path.trim());
+        let (legacy, current, hybrid) = compat::search_all(&ctx, q, 10)?;
+        let rank = |hits: &[(String, String)]| {
+            hits.iter()
+                .position(|(n, f)| n == name && f.contains(path))
+                .map(|p| p + 1)
+        };
+        let (lr, cr) = (rank(&legacy), rank(&current));
+        if cr.is_none() {
+            let got: Vec<String> = current.iter().take(3).map(|(n, f)| format!("{n} ({f})")).collect();
+            misses.push(format!("{q} => {name}; got {}", got.join(", ")));
+        }
+        legacy_ranks.push(lr);
+        current_ranks.push(cr);
+        if let Some(h) = &hybrid {
+            hybrid_ranks.push(rank(h));
+        }
+    }
+    let score = |ranks: &[Option<usize>]| {
+        let n = ranks.len().max(1) as f64;
+        let at = |k: usize| ranks.iter().filter(|r| r.map(|r| r <= k).unwrap_or(false)).count() as f64 / n;
+        SearchScore {
+            queries: ranks.len(),
+            recall_at_1: at(1),
+            recall_at_5: at(5),
+            recall_at_10: at(10),
+            mrr: ranks.iter().map(|r| r.map(|r| 1.0 / r as f64).unwrap_or(0.0)).sum::<f64>() / n,
+        }
+    };
+    Ok(SearchReport {
+        repo: repo.file_name().unwrap().to_string_lossy().to_string(),
+        legacy: score(&legacy_ranks),
+        current: score(&current_ranks),
+        hybrid: if hybrid_ranks.is_empty() { None } else { Some(score(&hybrid_ranks)) },
+        misses,
+    })
+}
+
 // ── Output ──────────────────────────────────────────────────────────────
 
 fn print_markdown(r: &Report) {
@@ -484,6 +574,25 @@ fn print_markdown(r: &Report) {
     for group in ["design", "holdout", "all"] {
         if let Some(a) = r.overall.get(&format!("{group}@1")) {
             println!("\n{group} @1: TP {} FP {} FN {}", a.tp, a.fp, a.fn_);
+        }
+    }
+
+    if let Some(s) = &r.search {
+        println!("\n## Search ({}, {} queries)\n", s.repo, s.current.queries);
+        println!("| search | R@1 | R@5 | R@10 | MRR |");
+        println!("|---|---|---|---|---|");
+        let mut rows = vec![("legacy (names only)", &s.legacy), ("lexical (current)", &s.current)];
+        if let Some(h) = &s.hybrid {
+            rows.push(("hybrid (lexical + embeddings)", h));
+        }
+        for (label, x) in rows {
+            println!(
+                "| {label} | {:.2} | {:.2} | {:.2} | {:.2} |",
+                x.recall_at_1, x.recall_at_5, x.recall_at_10, x.mrr
+            );
+        }
+        for m in &s.misses {
+            println!("- miss: {m}");
         }
     }
 
