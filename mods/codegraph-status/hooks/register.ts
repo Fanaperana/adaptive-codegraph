@@ -5,23 +5,28 @@ const CLI = 'adaptive-codegraph'
 
 type Status = { line: string; text: string }
 
+// The status line already shows this plugin's name as its label, so the text
+// is only a status symbol and the numbers.
+const count = (n: number) =>
+  n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`
+
 /** Read the index status (never builds or refreshes the index). */
 async function readStatus($: EngineInterface): Promise<Status | undefined> {
   try {
     const r = await $.process.run([CLI, 'status'], { timeoutMs: 30_000 })
     if (r.exitCode !== 0) return undefined
     if (r.stdout.startsWith('No index')) {
-      return { line: 'codegraph: not indexed yet', text: r.stdout }
+      return { line: '◌ not indexed', text: r.stdout }
     }
     const m = /Files: (\d+)\s+Symbols: (\d+)\s+Edges: (\d+)/.exec(r.stdout)
-    const line = m ? `codegraph: ${m[1]} files, ${m[2]} symbols` : 'codegraph: ready'
+    const line = m ? `● ${count(Number(m[1]))} files · ${count(Number(m[2]))} symbols` : '● ready'
     return { line, text: r.stdout }
   } catch {
     return undefined
   }
 }
 
-const MISSING = `codegraph: ${CLI} not found`
+const MISSING = '✖ CLI not found'
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {

@@ -1,6 +1,6 @@
 {
   "name": "codegraph-status",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "license": "MIT",
   "description": "Shows the adaptive-codegraph index in the status line and adds /codegraph-status and /codegraph-reindex."
 }
