@@ -431,6 +431,21 @@ pub fn rel_path(base: &Path, path: &Path) -> String {
         .join("/")
 }
 
+/// Whether `store` already reflects the source files on disk (same set of
+/// files, same mtimes and sizes, same language setup). Only stats files, so
+/// it is cheap enough to run before every query.
+pub fn is_up_to_date(config: &Config, registry: &ExtractorRegistry, store: &Store) -> anyhow::Result<bool> {
+    if store.profiles != registry.profiles() {
+        return Ok(false);
+    }
+    let base = config.base.as_deref().unwrap_or(Path::new("."));
+    let disk = collect_files(config, registry, base)?;
+    Ok(disk.len() == store.facts.len()
+        && disk.iter().all(|f| {
+            store.facts.get(&f.rel).map(|o| o.mtime == f.mtime && o.size == f.size).unwrap_or(false)
+        }))
+}
+
 /// Collect all indexable files from configured roots.
 fn collect_files(
     config: &Config,

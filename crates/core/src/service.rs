@@ -38,7 +38,8 @@ pub struct Workspace {
     embedder: Option<Box<dyn Embedder>>,
     text: Option<TextIndex>,
     last_check: Option<Instant>,
-    /// Minimum time between freshness checks.
+    /// Minimum time between freshness checks (default: check before every
+    /// answer, so a query right after an edit sees the edit).
     pub refresh_interval: Duration,
     /// Disable automatic refresh (e.g. for benchmarks).
     pub auto_refresh: bool,
@@ -129,7 +130,7 @@ impl Workspace {
             embedder: None,
             text: None,
             last_check: None,
-            refresh_interval: Duration::from_secs(2),
+            refresh_interval: Duration::ZERO,
             auto_refresh: true,
         })
     }
@@ -209,6 +210,9 @@ impl Workspace {
             }
         }
         self.last_check = Some(Instant::now());
+        if index::is_up_to_date(&self.config, &self.registry, self.store())? {
+            return Ok(None);
+        }
         self.refresh(false)
     }
 
