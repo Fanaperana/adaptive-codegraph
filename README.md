@@ -47,7 +47,9 @@ Tests to run:
 - 🔎 **Search by meaning.** "parse the nth-child argument" finds `parse_nth_child_argument`. Hybrid lexical + embedding ranking.
 - 📦 **Context in one call.** Describe a task and get the relevant source plus related signatures, packed to a token budget.
 - 🗺️ **Repo map.** A PageRank-ranked overview of the code everything else depends on.
-- ♻️ **Always fresh.** Changed files are re-indexed automatically before each answer. Incremental results are identical to a full rebuild.
+- 🔤 **Replaces grep.** Regex and literal search over every file, served from a trigram index: the same lines ripgrep returns, with each match labelled by the function that holds it.
+- ♻️ **Always fresh.** Changed files are re-indexed automatically before each answer (a file watcher keeps this free). Incremental results are identical to a full rebuild.
+- 🧑‍💻 **For people too.** Every tool is a CLI command with readable output, ripgrep-style flags, `--flat` for editors and `--json` for scripts.
 - 🌐 **Language-agnostic.** Rust, Python, TypeScript/TSX, JavaScript/JSX, Go and C built in. Add a language with one `.toml` and two `.scm` files, no Rust code.
 
 ---
@@ -59,7 +61,9 @@ Measured with the included benchmark ([`bench/RESULTS.md`](bench/RESULTS.md)) on
 | Task | Without a code graph | With adaptive-codegraph |
 |---|---|---|
 | **"Who calls X?"** (ground-truth fixtures) | `rg -w X`: finds 96% of callers, but **65% of what it returns is noise** (definitions, imports, same-named methods). ast-grep: 74% precise, 80% recall, 3 patterns per question | `callers X`: **99% precise, 97% recall**, one call |
-| **"Who calls X?"** (25 functions in [ast-grep](https://github.com/ast-grep/ast-grep)'s own source) | `rg`: **24 lines / ~530 tokens** per question · ast-grep: **7 lines / ~165 tokens** | **1.1 lines / ~50 tokens**: the callers of *that* function, not of everything with the same name |
+| **"Who calls X?"** (25 functions in [ast-grep](https://github.com/ast-grep/ast-grep)'s own source) | `rg`: **24 lines / ~530 tokens** per question · ast-grep: **7 lines / ~165 tokens** | **1.2 lines / ~60 tokens**: the callers of *that* function, not of everything with the same name |
+| **"Find this text"** (any string, error message, config key; 20 queries each on ast-grep and vscode) | `rg`: 45 ms / 360 ms per search | `text_search`: the **same lines in 40 / 40** queries, **0.3 ms / 8 ms** from the server, each match labelled with its function |
+| **"Who calls X?"** (18 hard edge cases: aliases, shadowing, same-named methods, re-exports, macros, callbacks) | `rg`: **0 / 18** exactly right · ast-grep: **5 / 18** | **18 / 18** |
 | **"Where's the code that does X?"** (24 natural-language questions) | No direct way: guess keywords, grep, open files | Correct function **#1 for 71%** and **top-5 for 88%** of questions (MRR **0.78**, vs 0.32 for name-only search) |
 | **"Show me what I need to work on X"** | Find the file, then read all of it (avg **10 KB**, ~2,500 tokens), then chase callers | `context`: the target's source is in a **~1,200-token** bundle for **88%** of questions, plus its callers/callees' signatures |
 | **"What breaks if I change X?"** (4 hops) | Search callers, then their callers, and so on: **426 rg searches** (37% precise) or **801 ast-grep searches** (65% precise) across the fixtures | `impact`: **98 calls in total**, one per question, with transitive dependents and tests to run. Static mode: **precision 1.00, recall 0.97** |
@@ -154,7 +158,8 @@ Every tool answers in compact plain text sized for a model's context window, tak
 | `context` | `context <task>` | The most relevant code for a task, packed to a token budget |
 | `explain` | `explain <symbol>` | Signature, doc, members, callers, callees, supertypes, implementations, types used |
 | `source` | `source <symbol>` | One symbol's source with line numbers |
-| `callers` | `callers <symbol> [--depth N]` | Call sites, or transitive callers by distance |
+| `text_search` | `grep <pattern>` | Regex or literal search over every file (code, config, docs), each match grouped under the function that holds it. Replaces grep |
+| `callers` | `callers <symbol> [--depth N] [--possible]` | Call sites, or transitive callers by distance; counts (or lists) calls the resolver could not link |
 | `callees` | `callees <symbol>` | What a symbol calls, in order |
 | `impact` | `impact <symbol>` | What may break if it changes, and the tests to run |
 | `repo_map` | `map` | PageRank-ranked overview of the most depended-on code |
@@ -164,7 +169,32 @@ Every tool answers in compact plain text sized for a model's context window, tak
 | `neighborhood` | `neighborhood <symbol>` | Symbols and edges within N hops |
 | `reindex`, `index_status` | `index`, `status` | Force a re-index / show index health and resolution stats |
 
-The daemon (`adaptive-codegraph-daemon --base .`) is optional: it watches files and re-indexes in the background, so even the first query after a big change is instant.
+The MCP server watches the project's files itself, so answers are always current and a warm query takes well under a millisecond. The daemon (`adaptive-codegraph-daemon --base .`) is optional: it re-indexes in the background, so even the first CLI query after a big change is fast.
+
+### On the command line, with or without an AI
+
+Every tool is also a CLI command, so you can use the graph directly in a terminal, in scripts or in your editor:
+
+```bash
+adaptive-codegraph grep "index format"                 # matches grouped by function
+adaptive-codegraph grep -i -w todo -g '*.rs'           # ignore case, whole word, only Rust files
+adaptive-codegraph grep -F 'max_file_bytes' --flat     # file:line:col:text, for editors and pipes
+adaptive-codegraph grep 'fn\s+parse_\w+' -l            # only the names of matching files
+adaptive-codegraph callers Store::save --possible      # also list calls it could not link
+adaptive-codegraph impact Store::save --depth 3
+adaptive-codegraph --json callers Store::save | jq '.callers[].caller.name'
+```
+
+`grep` takes ripgrep-style flags (`-F` literal, `-i`, `-w`, `-g` path prefix or glob, `-l`) and searches the same files ripgrep does (`.gitignore` decides). Default output groups matches by file and then by the function or class that holds each one:
+
+```text
+1 matching line in 1 file (7 of 142 files scanned):
+crates/core/src/store.rs
+  Store::deserialize (method, 324-347)
+    328: "index format v{version} is outdated (need v{FORMAT_VERSION}); ..."
+```
+
+`--json` works on every command: `grep` and `callers` give structured results (file, line, column, text, and the enclosing symbol with its ID); the other commands give `{"command": ..., "text": ...}`.
 
 ---
 
@@ -228,7 +258,8 @@ The same questions, asked the way an agent would ask each tool: `rg -w name`; as
 |---|---|---|---|---|
 | ripgrep | 0.35 | 0.96 | 84 | 19.4 KB |
 | ast-grep | 0.74 | 0.80 | 238 | 6.0 KB |
-| **adaptive-codegraph** | **0.99** | **0.97** | 98 | 8.1 KB |
+| **adaptive-codegraph** | **0.99** | **0.97** | 98 | 8.5 KB |
+| adaptive-codegraph, with possible callers listed | 0.94 | **0.99** | | |
 
 | What does a change to X affect? (4 hops) | Precision | Recall | Tool calls | Output |
 |---|---|---|---|---|
@@ -241,20 +272,58 @@ On a real repository with no ground truth ([ast-grep](https://github.com/ast-gre
 | | Lines returned | Tokens to read | Time | Tool calls |
 |---|---|---|---|---|
 | ripgrep | 24.3 | ~534 | 47 ms | 1.0 |
-| ast-grep | 7.2 | ~165 | 367 ms | 3.0 |
-| **adaptive-codegraph** | **1.1** | **~52** | 255 ms | 1.1 |
+| ast-grep | 7.2 | ~165 | 134 ms | 3.0 |
+| **adaptive-codegraph** | **1.2** | **~60** | 64 ms (CLI) · <1 ms (server) | 1.1 |
 
 **How to read this:**
 - grep finds nearly everything, but most of what it returns is not a call to *this* function: definitions, imports, comments, and other methods with the same name. The agent has to read and filter all of it.
 - ast-grep removes the text noise, but it matches syntax, not meaning: `x.save()` matches every `save` method, and calls through `self.repo`, imports or aliases are either all matched or all missed. Each question needs several patterns.
 - codegraph resolves which function a call goes to, so it answers for the exact symbol and gives transitive impact in one call. Its few misses are calls that need flow analysis (see limits below).
 - \* `impact` also reports callers that reach X through an interface or base class. These are real effects that the call-only ground truth doesn't count; static mode scores 1.00 / 0.97.
-- grep is faster per query and needs no index. codegraph builds its index once (~15 s here, with embeddings) and keeps it fresh incrementally. Its CLI times above include loading the index, which the MCP server keeps in memory.
+- codegraph builds its index once (~15 s here with embeddings, under 1 s without) and keeps it fresh incrementally. Its CLI times include loading the index; the MCP server keeps it in memory and answers in under a millisecond.
+- `callers` also counts calls it could not link to one target (`+ N possible`). Listing them (`possible=true`) raises recall to 0.99, above ripgrep's 0.96, at 0.94 precision.
 
 Reproduce with [`bench/compare/compare.py`](bench/compare/compare.py) (needs `rg`, `ast-grep` and `adaptive-codegraph` on PATH):
 
 ```bash
 python bench/compare/compare.py --ast-grep ast-grep --repo /path/to/ast-grep --json bench/results/compare.json
+```
+
+### Text search compared with ripgrep and git grep
+
+20 queries per repository, generated from the repository itself with a fixed seed (10 identifiers, 5 string literals, TODO / fixme, and 3 regexes, two with no literal to filter on). "Server" is the MCP server an agent talks to; the CLI is a fresh process that loads the index each time.
+
+| Repository | ripgrep | git grep | codegraph CLI | **codegraph server** | Same lines as ripgrep | Files scanned |
+|---|---|---|---|---|---|---|
+| ast-grep (325 files) | 45 ms | 25 ms | 46 ms | **0.3 ms** | **20 / 20 queries** | 2.0% |
+| vscode (14,838 files) | 360 ms | 271 ms | 705 ms | **8 ms** | **20 / 20 queries** | 0.8% |
+
+Median per query. The trigram index means a typical search reads under 2% of the files. The slowest server query on vscode (a regex with no literal, so every file is scanned) took 42 ms, against 367 ms for ripgrep. Where codegraph is slower is the cold CLI on a very large repository, which has to load the whole index first (index build: 0.4 s for ast-grep, 15 s for vscode, without embeddings). Codegraph also returns less text: each line is cut at 240 characters (ripgrep printed 16.5 MB for these vscode queries, codegraph 4.8 MB), though grouping by function makes single-name answers on small repositories about a third larger.
+
+```bash
+python bench/compare/text.py --repo /path/to/ast-grep --repo /path/to/vscode --json bench/results/text.json
+```
+
+### Edge cases
+
+18 hard "who calls X?" cases in Python, TypeScript and Rust ([`bench/edge/`](bench/edge)), each scored on its own: a case counts only if the tool returns exactly the right callers.
+
+| Edge case (examples) | ripgrep | ast-grep | adaptive-codegraph |
+|---|---|---|---|
+| Same method name on another type or class (`Store.save` vs `Cache.save`) | wrong extras | wrong extras | ✅ |
+| Call through a typed field (`self.store.save`, `this.repo.save`) | wrong extras | wrong extras | ✅ |
+| Aliased import (`checksum as cs`), aliased `use` inside a closure | misses the call | misses the call | ✅ |
+| Name only in a comment or a string | counted as a caller | ✅ | ✅ |
+| Local variable shadows the function; function passed as a callback | wrong caller | wrong caller, callback missed | ✅ |
+| `super().load()`, method on `Child()` | wrong extras | wrong extras | ✅ |
+| Call inside a macro argument (`println!`), optional chaining (`a?.get()`) | wrong extras | missed | ✅ |
+| Default export imported under another name | missed | missed | ✅ |
+| **Exact answers** | **0 / 18** | **5 / 18** | **18 / 18** |
+
+Text search was checked the same way against ripgrep on 17 edge cases (Unicode and case folding, CRLF, UTF-8 byte-order mark, UTF-16, a 200 KB line, a file over 4 MB, binary, ignored and hidden files, regexes with no literal, `^$`, a last line without a newline, invalid UTF-8): **the same lines in 17 / 17**. Full tables, and the bugs these cases found (all fixed), are in [`bench/RESULTS.md`](bench/RESULTS.md#edge-cases). These cases were written for this benchmark, so they show what the resolver handles; the held-out fixtures are the unbiased accuracy numbers.
+
+```bash
+python bench/compare/edge.py --ast-grep ast-grep --json bench/results/edge.json
 ```
 
 ### Reproduce the accuracy benchmark
@@ -348,6 +417,15 @@ max_files = 60000                         # refuse to index more than this
 ```
 
 `.gitignore` is always respected. Embeddings are cached per user (`ACG_MODEL_DIR` overrides the location).
+
+| Environment variable | Effect |
+|---|---|
+| `ACG_NO_EMBED=1` | Skip the embedding model: much faster indexing of very large repositories, lexical search only |
+| `ACG_DISABLE=1` | Turn off the session-start hook |
+| `ACG_MODEL_DIR` | Where the embedding model is cached |
+| `ACG_TIMINGS=1` | Print how long each indexing and loading step takes |
+
+Text search (`grep` / `text_search`) ignores the graph's default excludes such as `build/` and `dist/`, so it finds what ripgrep finds; patterns you add to `exclude` apply to it too.
 
 ---
 

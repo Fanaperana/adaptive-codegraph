@@ -52,7 +52,8 @@ def patterns(lang, name):
 
 def run(argv, cwd):
     t = time.perf_counter()
-    r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    r = subprocess.run(argv, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       stdin=subprocess.DEVNULL)
     return r.stdout, time.perf_counter() - t
 
 

@@ -42,7 +42,8 @@ RUNS = 3
 
 def run(argv, cwd):
     t = time.perf_counter()
-    r = subprocess.run(argv, cwd=cwd, capture_output=True, env=ENV)
+    # stdin closed: with no terminal, rg would otherwise search stdin.
+    r = subprocess.run(argv, cwd=cwd, capture_output=True, env=ENV, stdin=subprocess.DEVNULL)
     return r.stdout.decode("utf-8", "replace"), time.perf_counter() - t, r.returncode
 
 
@@ -65,7 +66,7 @@ def pairs(out):
 # ------------------------------------------------------------------ tools
 def rg(q, cwd):
     flags = (["-F"] if q["fixed"] else []) + (["-i"] if q["ignore_case"] else []) + (["-w"] if q["word"] else [])
-    out, t, _ = timed(["rg", "-n", "--no-heading", "--color", "never", *flags, "-e", q["pattern"]], cwd)
+    out, t, _ = timed(["rg", "-n", "--no-heading", "--color", "never", *flags, "-e", q["pattern"], "."], cwd)
     return pairs(out), t, len(out.encode())
 
 
@@ -119,9 +120,9 @@ class Server:
 def queries(repo, seed=7):
     rnd = random.Random(seed)
     out, _, _ = run(["rg", "-o", "-N", "--no-filename", "-r", "$1",
-                     r"\b(?:fn|function|def|class|struct|interface|func|type|enum|trait)\s+([A-Za-z_][A-Za-z0-9_]{5,})"], repo)
+                     r"\b(?:fn|function|def|class|struct|interface|func|type|enum|trait)\s+([A-Za-z_][A-Za-z0-9_]{5,})", "."], repo)
     idents = sorted(set(out.split()))
-    out, _, _ = run(["rg", "-o", "-N", "--no-filename", r"\"[A-Z][a-z]+(?: [a-z]+){2,5}\""], repo)
+    out, _, _ = run(["rg", "-o", "-N", "--no-filename", r"\"[A-Z][a-z]+(?: [a-z]+){2,5}\"", "."], repo)
     strings = sorted({s.strip('"') for s in out.splitlines()})
     qs = []
     for name in rnd.sample(idents, min(10, len(idents))):

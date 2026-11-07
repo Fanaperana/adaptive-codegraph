@@ -132,12 +132,12 @@ def text_cases():
 
 def rg_lines(q, cwd):
     flags = (["-F"] if q.get("fixed") else []) + (["-i"] if q.get("ignore_case") else []) + (["-w"] if q.get("word") else [])
-    out, _ = run(["rg", "-n", "--no-heading", "--color", "never", *flags, "-e", q["pattern"]], cwd)
+    out, _ = run(["rg", "-n", "--no-heading", "--color", "never", *flags, "-e", q["pattern"], "."], cwd)
     s = set()
     for line in out.splitlines():
         parts = line.split(":", 2)
         if len(parts) >= 2 and parts[1].isdigit():
-            s.add((parts[0].replace("\\", "/"), int(parts[1])))
+            s.add((parts[0].replace("\\", "/").removeprefix("./"), int(parts[1])))
     return s
 
 

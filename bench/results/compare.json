@@ -2,7 +2,7 @@
   "fixtures": {
     "ripgrep": {
       "callers_bytes": 19828.0,
-      "callers_secs": 3.1165770999505185,
+      "callers_secs": 3.123669999971753,
       "callers_calls": 84.0,
       "callers_lines": 357.0,
       "callers_tp": 110.0,
@@ -12,7 +12,7 @@
       "impact_pred": 444.0,
       "impact_truth": 168.0,
       "impact_bytes": 56919.0,
-      "impact_secs": 15.255199699793593,
+      "impact_secs": 15.082830900035333,
       "impact_calls": 426.0,
       "callers_precision": 0.3536977491961415,
       "callers_recall": 0.9565217391304348,
@@ -21,7 +21,7 @@
     },
     "ast-grep": {
       "callers_bytes": 6131.0,
-      "callers_secs": 4.297715199922095,
+      "callers_secs": 4.283144400120364,
       "callers_calls": 238.0,
       "callers_lines": 147.0,
       "callers_tp": 92.0,
@@ -31,7 +31,7 @@
       "impact_pred": 216.0,
       "impact_truth": 168.0,
       "impact_bytes": 13192.0,
-      "impact_secs": 13.586540899937972,
+      "impact_secs": 13.609085000134655,
       "impact_calls": 801.0,
       "callers_precision": 0.736,
       "callers_recall": 0.8,
@@ -40,7 +40,7 @@
     },
     "adaptive-codegraph": {
       "callers_bytes": 8659.0,
-      "callers_secs": 2.4374642000329914,
+      "callers_secs": 2.5030687001126353,
       "callers_calls": 98.0,
       "callers_lines": 113.0,
       "callers_tp": 112.0,
@@ -50,7 +50,7 @@
       "impact_pred": 177.0,
       "impact_truth": 168.0,
       "impact_bytes": 20958.0,
-      "impact_secs": 2.4560583999118535,
+      "impact_secs": 2.485950700036483,
       "impact_calls": 98.0,
       "callers_precision": 0.9911504424778761,
       "callers_recall": 0.9739130434782609,
@@ -197,24 +197,24 @@
         390
       ]
     ],
-    "index_secs": 14.233016199999838,
+    "index_secs": 14.682279100001324,
     "per_query": {
       "ripgrep": {
         "lines": 24.28,
         "bytes": 2134.64,
-        "secs": 0.04695488399884198,
+        "secs": 0.04688969200011343,
         "calls": 1.0
       },
       "ast-grep": {
         "lines": 7.24,
         "bytes": 661.76,
-        "secs": 0.13384947200131136,
+        "secs": 0.1335306919994764,
         "calls": 3.0
       },
       "adaptive-codegraph": {
-        "lines": 1.12,
-        "bytes": 230.2,
-        "secs": 0.06321640799986199,
+        "lines": 1.24,
+        "bytes": 240.16,
+        "secs": 0.06393187600187958,
         "calls": 1.12
       }
     }

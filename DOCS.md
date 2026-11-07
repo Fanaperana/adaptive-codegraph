@@ -74,6 +74,7 @@ adaptive-codegraph [OPTIONS] <COMMAND>
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--base <PATH>` | `.` (current directory) | Project root directory |
+| `--json` | off | JSON output: structured for `grep` and `callers`, `{"command", "text"}` for other commands |
 
 ### Commands
 
@@ -123,15 +124,41 @@ Case-insensitive substring search for symbols by name.
 
 ---
 
+#### `grep <PATTERN>` — Text Search
+
+```bash
+adaptive-codegraph grep "index format"
+adaptive-codegraph grep -i -w todo -g '*.rs'
+adaptive-codegraph grep -F 'max_file_bytes' --flat
+adaptive-codegraph --json grep 'fn\s+parse_\w+'
+```
+
+Regex (Rust syntax) or literal search over every text file in the project, served from a trigram index that is refreshed before each search. Searches the files ripgrep would (`.gitignore`, hidden files skipped; files over 4 MB are scanned from disk). UTF-8 byte-order marks are dropped and UTF-16 files are decoded.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-F`, `--fixed` | off | Literal string, not a regex |
+| `-i`, `--ignore-case` | off | Ignore case |
+| `-w`, `--word` | off | Whole words only |
+| `-g`, `--path <P>` | all files | Path prefix, or a glob such as `*.toml` |
+| `--limit <N>` | `0` (all) | Most matching lines to show |
+| `--flat` | off | One `file:line:column:text` row per match |
+| `-l`, `--files-with-matches` | off | Only the file names |
+
+**Output:** Matches grouped by file and by the function or class that contains each line.
+
+---
+
 #### `callers <NAME>` — Find Callers
 
 ```bash
 adaptive-codegraph callers "handle_request"
+adaptive-codegraph callers "handle_request" --possible
 ```
 
-Lists all symbols that call or reference the given symbol (incoming edges in the graph).
+Lists the call sites of the given symbol (and functions that pass it as a value). Ends with `+ N possible` when calls to the same name could not be linked to one target; `--possible` lists them. `--depth N` gives transitive callers.
 
-**Output:** Each caller with its name, kind, file, and the edge kind (e.g., `calls`, `imports`).
+**Output:** Each caller with its file and line; `(inferred)` for lower-confidence edges, `(passed as a value)` for callbacks.
 
 ---
 
@@ -313,6 +340,25 @@ BM25 full-text search over symbols.
 ```
 
 **Returns:** Array of `{ id, name, kind, lang, file, score }`
+
+---
+
+#### `text_search`
+
+Regex or literal search over every text file, grouped by the function or class holding each match (the MCP form of `grep`).
+
+```json
+{
+  "pattern": "index format",
+  "fixed": false,
+  "ignore_case": false,
+  "word": false,
+  "path": "*.rs",
+  "limit": 60
+}
+```
+
+**Returns:** Text: a header (`N matching lines in M files (scanned of indexed files scanned)`), then each file, each enclosing symbol, and the matching lines with line numbers.
 
 ---
 

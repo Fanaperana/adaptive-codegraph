@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Indexed text search** (`text_search` MCP tool, `grep` CLI command):
+  regex or literal search over every text file (code, config, docs, any
+  language), from a trigram index kept current on each call. Same matches as
+  ripgrep (`.gitignore` decides what is searched); each match is grouped
+  under the function or class that holds it. Files over 4 MB are scanned
+  from disk instead of held in memory. CLI output: grouped (default),
+  `--flat` (`file:line:col:text`), `--json`, `-l`; flags `-F`, `-i`, `-w`,
+  `-g <prefix or glob>`.
+- **Possible callers**: `callers` counts calls to the same name that the
+  resolver could not link to one target (`+ N possible`); `possible=true` /
+  `--possible` lists them. Index format v4 keeps these calls.
+- **Global `--json` flag** on the CLI: structured output for `grep` and
+  `callers`, `{"command", "text"}` for the other commands.
+- **File watcher in the MCP server**: the freshness check walks the tree only
+  after a file changed. Warm answers take well under 1 ms; a query right
+  after a write still sees the write.
+- `ACG_NO_EMBED=1` skips the embedding model (fast indexing of very large
+  repositories; lexical search only).
+- **Text search benchmark** (`bench/compare/text.py`) against ripgrep and
+  git grep: latency, agreement with ripgrep, output size.
 - **Whole-project resolver**: calls are resolved through scopes, imports
   (incl. aliases, globs, re-exports, workspace packages), `self`/`this`,
   local variable / parameter / field / loop-variable types, and supertypes.
@@ -40,6 +60,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   built-in language definitions used when no `languages/` folder exists.
 - **`acg-bench`**: ground-truth call-graph fixtures (design + held-out),
   impact, search and scale benchmarks. Results in `bench/RESULTS.md`.
+
+### Changed
+
+- Tree-sitter queries compile on first use, not at startup: a CLI query on
+  an up-to-date index starts in ~30 ms instead of ~190 ms. Errors in a custom
+  language's queries now show when its first file is parsed.
+- Freshness is checked before every answer (cheap stat-only check), not at
+  most every 2 s, so an answer right after an edit includes the edit.
+- The file walk runs in parallel.
 
 ### Fixed
 

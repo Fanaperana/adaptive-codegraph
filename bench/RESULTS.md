@@ -125,7 +125,8 @@ reverse transitive closure of the expected edges.
 |---|---|---|---|---|
 | ripgrep | 0.35 | 0.96 | 84 | 19.4 KB |
 | ast-grep | 0.74 | 0.80 | 238 | 6.0 KB |
-| adaptive-codegraph | 0.99 | 0.97 | 98 | 8.1 KB |
+| adaptive-codegraph | 0.99 | 0.97 | 98 | 8.5 KB |
+| adaptive-codegraph + possible callers | 0.94 | 0.99 | | |
 
 | Impact, 4 hops | Precision | Recall | Tool calls | Output |
 |---|---|---|---|---|
@@ -143,10 +144,14 @@ non-test functions sampled with a fixed seed; no ground truth), average per
 | | Lines | Bytes | ~Tokens | Time | Calls |
 |---|---|---|---|---|---|
 | ripgrep | 24.3 | 2135 | 534 | 47 ms | 1.0 |
-| ast-grep | 7.2 | 662 | 165 | 367 ms | 3.0 |
-| adaptive-codegraph | 1.1 | 208 | 52 | 255 ms | 1.1 |
+| ast-grep | 7.2 | 662 | 165 | 134 ms | 3.0 |
+| adaptive-codegraph | 1.2 | 240 | 60 | 64 ms | 1.1 |
 
-Index build for codegraph: ~15 s once (with embeddings). Spot checks of the
+Index build for codegraph: ~15 s once (with embeddings). Codegraph times
+are CLI processes that load the index; the MCP server answers from memory
+in under 1 ms. "+ possible callers" adds the calls the resolver could not
+link to one target (listed with `--possible`); by default `callers` only
+counts them in one line. Spot checks of the
 sample: where ast-grep returns many more hits (`potential_kinds` 38,
 `get_matcher` 38), they are calls to other methods with the same name, or
 calls through a trait, which codegraph reports under `impact` (dispatch)
@@ -155,3 +160,104 @@ rather than as static callers of that implementation.
 Building this comparison found one codegraph bug, now fixed:
 `file.rs::method` did not find a method unless its type was named too
 (`file.rs::Type::method`).
+
+## Text search compared with ripgrep and git grep
+
+`bench/compare/text.py`, raw numbers in `bench/results/text.json`. ripgrep
+14.1, git 2.x, adaptive-codegraph at this commit, Windows 11.
+
+Queries come from the repository with a fixed seed: 10 identifiers from
+definitions (whole word), 5 string literals (literal), `TODO`, `fixme`
+(ignore case), `\d+\.\d+\.\d+` and `[A-Z][a-zA-Z]+Error` (no literal
+for the trigram filter) and `https?://[a-z0-9.-]+`. Each tool runs each
+query 3 times; the table shows the median over queries of the median run.
+ripgrep's answer is the truth for agreement.
+
+| Repository | ripgrep | git grep | codegraph CLI | codegraph server | Precision / recall vs ripgrep | Exact queries | Median files scanned |
+|---|---|---|---|---|---|---|---|
+| ast-grep `cab768cd` (325 files) | 45 ms | 25 ms | 46 ms | 0.3 ms | 1.000 / 1.000 | 20 / 20 | 2.0% |
+| vscode `8e2b2613647` (14,838 files) | 360 ms | 271 ms | 705 ms | 8.0 ms | 1.000 / 1.000 | 20 / 20 | 0.8% |
+
+- The server keeps the index in memory and watches the files, so a query
+  only runs the regex on the files the trigram filter keeps. Slowest server
+  query: 3.1 ms (ast-grep), 42 ms (vscode: a regex with no literal scans
+  all 14k files), against 48 ms and 386 ms for ripgrep.
+- The CLI loads the index on every run. That is as fast as ripgrep on
+  ast-grep and about 2x slower on vscode. Index build without embeddings:
+  0.4 s and 14.5 s.
+- Output: codegraph cuts each line at 240 characters, so on vscode's
+  minified files it printed 4.8 MB where ripgrep printed 16.5 MB. For
+  single identifiers and strings on ast-grep its grouped answer was larger
+  (6.4 KB vs 4.8 KB) because of the function headings.
+- The first vscode run found recall 0.98: one 8.5 MB file was over the
+  in-memory size limit and was skipped. Large files are now scanned from
+  disk at search time.
+
+## Edge cases
+
+`bench/compare/edge.py`, raw answers in `bench/results/edge.json`.
+
+**"Who calls X?" on hard cases.** Small projects in `bench/edge/`
+(Python, TypeScript, Rust), each case listed in `cases.txt` with its
+expected callers. Same scoring as above (hits credited to the enclosing
+`@def`); a case counts as exact only when a tool returns exactly the
+expected callers, nothing more and nothing less.
+
+| Language | Edge case | ripgrep | ast-grep | adaptive-codegraph |
+|---|---|---|---|---|
+| Python | method called through a typed field (`self.store.save`) | +3 wrong | +1 wrong | exact |
+| Python | same method name on another type | +3 wrong | +1 wrong | exact |
+| Python | aliased import (`checksum as cs`), module call, name in a comment and a string | 3 wrong, 1 missed | 1 missed | exact |
+| Python | local variable shadows the function; function passed as a callback | +3 wrong | wrong caller, callback missed | exact |
+| Python | `super().load()` call to the base method | +2 wrong | +1 wrong | exact |
+| Python | subclass method called on a new instance (`Child().load()`) | +2 wrong | +1 wrong | exact |
+| Rust | same associated function name on two types (`Store::new` / `Cache::new`) | +3 wrong | +2 wrong | exact |
+| Rust | chained calls (`s.save(1).save(2)`), name in a string | +2 wrong | exact | exact |
+| Rust | call through `Self::` inside the impl | +1 wrong | exact | exact |
+| Rust | call inside a macro argument (`println!`) | +2 wrong | missed | exact |
+| Rust | aliased `use`, called inside a closure | 3 wrong, missed | missed | exact |
+| TypeScript | method called through a typed private field (`this.repo.save`) | +4 wrong | +1 wrong | exact |
+| TypeScript | same method name on another class | +4 wrong | +1 wrong | exact |
+| TypeScript | import through a re-export (`index.ts`), name in a comment and a string | +4 wrong | exact | exact |
+| TypeScript | optional-chaining call (`this.cache?.get`) | +1 wrong | missed | exact |
+| TypeScript | arrow function assigned to a `const` | +2 wrong | exact | exact |
+| TypeScript | default export imported under another name | 1 wrong, missed | missed | exact |
+| TypeScript | class instantiated with `new` | +5 wrong | exact | exact |
+| | **exact answers** | **0 / 18** | **5 / 18** | **18 / 18** |
+
+The first run scored codegraph 15 / 18. The three misses were fixed in the
+resolver before the run above: a local variable now shadows a same-named
+import, a call used as a receiver (`Child()`, `new Repo()`) gets the type it
+builds, and a default import binds the module's `export default` symbol.
+Functions passed as a value now get a `callback` edge (shown by `callers` as
+"passed as a value"). These cases were written for this benchmark, so they
+show what the resolver handles, not an unbiased sample: the held-out
+fixtures above remain the honest accuracy numbers.
+
+**Text search edge cases.** `adaptive-codegraph grep` against `rg` on the
+same files (a temporary git repository), compared line by line:
+
+| Case | Pattern | Same lines as ripgrep |
+|---|---|---|
+| Unicode literal | `naïve` | yes |
+| Unicode, ignore case | `-i CAFÉ` | yes |
+| Unicode, ignore case, no simple fold | `-i STRASSE` (text has `straße`) | yes (both 0) |
+| CRLF line endings | `target line$` | yes (both 0: `$` stops before `\r` in both) |
+| UTF-8 byte-order mark | `^import` | yes |
+| UTF-16 file with byte-order mark | `utf16 target` | yes |
+| 200 KB line | `long_line_target` | yes |
+| file over 4 MB | `needle_in_big_file` | yes |
+| binary file | `binary_target` | yes (both skip) |
+| file in `.gitignore` | `ignored_target` | yes (both skip) |
+| hidden file | `hidden_target` | yes (both skip) |
+| regex with no literal | `\b\d{3}-\d{4}\b` | yes |
+| alternation | `first\|last_line` | yes |
+| whole word vs `run_all`, `_run` | `-w run` | yes |
+| empty lines | `^$` | yes |
+| last line without a newline | `last_line_target$` | yes |
+| invalid UTF-8 (Latin-1) | `latin1_target` | yes |
+| | | **17 / 17** |
+
+The first run matched 14 / 17: a UTF-8 byte-order mark hid the first line
+from `^`, UTF-16 files were treated as binary, and `^$` reported an empty
+line after the final newline. All three are fixed.
