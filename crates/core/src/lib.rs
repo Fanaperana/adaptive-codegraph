@@ -11,3 +11,4 @@ pub mod resolve;
 pub mod search;
 pub mod service;
 pub mod store;
+pub mod text;

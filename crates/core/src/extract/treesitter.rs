@@ -67,17 +67,48 @@ struct EdgeCaps {
     binding_iter: Option<u32>,
 }
 
-/// A generic extractor powered by tree-sitter + query files.
-pub struct TreeSitterExtractor {
-    config: TreeSitterConfig,
+/// Compiled queries and their capture indexes.
+struct Compiled {
     symbol_query: tree_sitter::Query,
     edge_query: tree_sitter::Query,
     sym_caps: SymCaps,
     edge_caps: EdgeCaps,
 }
 
+/// A generic extractor powered by tree-sitter + query files.
+///
+/// Queries are compiled on first use: compiling every language's queries
+/// takes far longer than answering a query on an index that is up to date.
+pub struct TreeSitterExtractor {
+    config: TreeSitterConfig,
+    compiled: std::sync::OnceLock<Result<Compiled, String>>,
+}
+
 impl TreeSitterExtractor {
     pub fn new(config: TreeSitterConfig) -> anyhow::Result<Self> {
+        Ok(Self { config, compiled: std::sync::OnceLock::new() })
+    }
+
+    /// Compile now and report query errors (normally deferred to first use).
+    pub fn validate(&self) -> anyhow::Result<()> {
+        self.compiled().map(|_| ())
+    }
+
+    fn compiled(&self) -> anyhow::Result<&Compiled> {
+        self.compiled
+            .get_or_init(|| compile(&self.config).map_err(|e| e.to_string()))
+            .as_ref()
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    /// Compiled queries; `extract` has already checked they compile.
+    fn cq(&self) -> &Compiled {
+        self.compiled().expect("queries compiled before use")
+    }
+}
+
+fn compile(config: &TreeSitterConfig) -> anyhow::Result<Compiled> {
+    {
         let symbol_query = tree_sitter::Query::new(&config.ts_language, &config.symbol_query)
             .map_err(|e| anyhow::anyhow!("symbol query error for {}: {e}", config.lang_id))?;
         let edge_query = tree_sitter::Query::new(&config.ts_language, &config.edge_query)
@@ -107,14 +138,16 @@ impl TreeSitterExtractor {
             binding_iter: e("binding.iter"),
         };
 
-        Ok(Self {
-            config,
+        Ok(Compiled {
             symbol_query,
             edge_query,
             sym_caps,
             edge_caps,
         })
     }
+}
+
+impl TreeSitterExtractor {
 
     /// Run the symbol query and build Symbol structs (without the file symbol).
     fn extract_symbols(&self, file: &str, tree: &tree_sitter::Tree, src: &[u8]) -> Vec<Symbol> {
@@ -128,7 +161,7 @@ impl TreeSitterExtractor {
         }
 
         let mut cursor = tree_sitter::QueryCursor::new();
-        let mut matches = cursor.matches(&self.symbol_query, tree.root_node(), src);
+        let mut matches = cursor.matches(&self.cq().symbol_query, tree.root_node(), src);
         // Keyed by name-node start byte: several patterns can match one symbol.
         let mut cands: HashMap<usize, Cand> = HashMap::new();
 
@@ -136,17 +169,17 @@ impl TreeSitterExtractor {
             let get = |idx: Option<u32>| {
                 idx.and_then(|i| m.captures.iter().find(|c| c.index == i).map(|c| c.node))
             };
-            let Some(name_node) = get(self.sym_caps.name) else { continue };
+            let Some(name_node) = get(self.cq().sym_caps.name) else { continue };
             let name = text(name_node, src);
             if name.is_empty() {
                 continue;
             }
-            let def = get(self.sym_caps.def).unwrap_or(name_node);
-            let explicit_kind = property(&self.symbol_query, m.pattern_index, "kind");
-            let type_hint = get(self.sym_caps.type_)
+            let def = get(self.cq().sym_caps.def).unwrap_or(name_node);
+            let explicit_kind = property(&self.cq().symbol_query, m.pattern_index, "kind");
+            let type_hint = get(self.cq().sym_caps.type_)
                 .and_then(|n| clean_type(&text(n, src)))
                 .or_else(|| arrow_return_type(def, src));
-            let container = get(self.sym_caps.container).map(|n| text(n, src));
+            let container = get(self.cq().sym_caps.container).map(|n| text(n, src));
 
             let cand = Cand {
                 name,
@@ -253,8 +286,8 @@ impl TreeSitterExtractor {
         result: &mut ExtractionResult,
     ) {
         let mut cursor = tree_sitter::QueryCursor::new();
-        let mut matches = cursor.matches(&self.edge_query, tree.root_node(), src);
-        let c = &self.edge_caps;
+        let mut matches = cursor.matches(&self.cq().edge_query, tree.root_node(), src);
+        let c = &self.cq().edge_caps;
         // One reference per name node: when several patterns match the same
         // call, keep the most specific (with a qualifier or receiver).
         let mut ref_at: HashMap<usize, usize> = HashMap::new();
@@ -273,8 +306,8 @@ impl TreeSitterExtractor {
             if !names.is_empty() {
                 let qualifier = one(c.call_qualifier).map(|n| text(n, src));
                 let receiver = one(c.call_receiver).map(|n| text(n, src));
-                let target_kind = property(&self.edge_query, m.pattern_index, "target");
-                let kind = property(&self.edge_query, m.pattern_index, "edge")
+                let target_kind = property(&self.cq().edge_query, m.pattern_index, "target");
+                let kind = property(&self.cq().edge_query, m.pattern_index, "edge")
                     .unwrap_or_else(|| "calls".to_string());
                 for n in names {
                     let name = text(n, src);
@@ -406,6 +439,7 @@ impl Extractor for TreeSitterExtractor {
     }
 
     fn extract(&self, path: &Path, content: &[u8]) -> anyhow::Result<ExtractionResult> {
+        self.compiled()?;
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&self.config.ts_language)?;
 

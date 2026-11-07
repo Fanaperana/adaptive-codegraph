@@ -64,6 +64,8 @@ gix = { version = "0.68", default-features = false, features = ["revision"] }
 
 # Regex (lightweight)
 regex-lite = "0.1"
+regex = "1"
+regex-syntax = "0.8"
 streaming-iterator = "0.1"
 
 # Error handling

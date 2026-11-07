@@ -3,7 +3,11 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use adaptive_codegraph_core::{lang, service::Workspace};
+use adaptive_codegraph_core::{
+    lang,
+    service::{self, Workspace},
+    text::TextQuery,
+};
 
 #[derive(Parser)]
 #[command(
@@ -15,6 +19,11 @@ struct Cli {
     /// Path to workspace root (default: current directory)
     #[arg(long, default_value = ".", global = true)]
     base: String,
+
+    /// Print JSON instead of text (structured for `grep` and `callers`;
+    /// other commands give {"command", "text"})
+    #[arg(long, global = true)]
+    json: bool,
 
     #[command(subcommand)]
     command: Commands,
@@ -58,6 +67,32 @@ enum Commands {
         name: String,
         #[arg(long, default_value = "20")]
         limit: usize,
+    },
+    /// Search the text of every file (code, config, docs) with a regex or a
+    /// literal. Matches are grouped by the function or class that holds them.
+    Grep {
+        pattern: String,
+        /// Match the pattern as a literal string, not a regex
+        #[arg(short = 'F', long)]
+        fixed: bool,
+        /// Ignore case
+        #[arg(short, long)]
+        ignore_case: bool,
+        /// Match whole words only
+        #[arg(short, long)]
+        word: bool,
+        /// Only files under this path prefix, or matching this glob (e.g. '*.rs')
+        #[arg(short = 'g', long)]
+        path: Option<String>,
+        /// Show at most this many lines (0 = all)
+        #[arg(long, default_value = "0")]
+        limit: usize,
+        /// One `file:line:column:text` row per match (for editors and pipes)
+        #[arg(long)]
+        flat: bool,
+        /// Only print the names of files with matches
+        #[arg(short = 'l', long)]
+        files_with_matches: bool,
     },
     /// Everything known about a symbol
     Explain { symbol: String },
@@ -158,10 +193,13 @@ fn main() -> Result<()> {
     }
 
     let mut ws = Workspace::open(&base)?;
+    let json = cli.json;
+    let name = command_name(&cli.command);
     let out = match cli.command {
         Commands::Index { incremental, quiet } => {
             let t0 = Instant::now();
             let note = ws.refresh(!incremental)?;
+            ws.refresh_text()?;
             if quiet {
                 return Ok(());
             }
@@ -215,6 +253,30 @@ fn main() -> Result<()> {
                 Commands::SemanticSearch { query, limit } | Commands::Find { name: query, limit } => {
                     ws.search_text(&query, limit, None, None)?
                 }
+                Commands::Grep { pattern, fixed, ignore_case, word, path, limit, flat, files_with_matches } => {
+                    let q = TextQuery { pattern, fixed, ignore_case, word, path };
+                    let r = ws.grep(&q)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&r)?);
+                        return Ok(());
+                    }
+                    if files_with_matches {
+                        let mut seen = std::collections::BTreeSet::new();
+                        r.matches.iter().filter(|m| seen.insert(m.hit.file.clone())).map(|m| format!("{}\n", m.hit.file)).collect()
+                    } else if flat {
+                        service::format_grep_flat(&r)
+                    } else {
+                        service::format_grep(&r, limit)
+                    }
+                }
+                Commands::Callers { symbol, depth } if json && depth <= 1 => {
+                    let v = match ws.callers_data(&symbol) {
+                        Ok(r) => serde_json::to_value(&r)?,
+                        Err(m) => serde_json::json!({ "error": m }),
+                    };
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                    return Ok(());
+                }
                 Commands::Explain { symbol } => ws.explain_text(&symbol),
                 Commands::Source { symbol, max_lines } => ws.source_text(&symbol, max_lines),
                 Commands::Callers { symbol, depth } => ws.callers_text(&symbol, depth),
@@ -231,8 +293,36 @@ fn main() -> Result<()> {
             }
         }
     };
-    print!("{out}");
+    if json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "command": name, "text": out }))?);
+    } else {
+        print!("{out}");
+    }
     Ok(())
+}
+
+fn command_name(c: &Commands) -> &'static str {
+    match c {
+        Commands::Init => "init",
+        Commands::Index { .. } => "index",
+        Commands::Search { .. } | Commands::SemanticSearch { .. } | Commands::Find { .. } => "search",
+        Commands::Grep { .. } => "grep",
+        Commands::Explain { .. } => "explain",
+        Commands::Source { .. } => "source",
+        Commands::Callers { .. } => "callers",
+        Commands::Callees { .. } => "callees",
+        Commands::Impact { .. } => "impact",
+        Commands::Context { .. } => "context",
+        Commands::Map { .. } => "map",
+        Commands::Outline { .. } => "outline",
+        Commands::Path { .. } => "path",
+        Commands::DeadCode { .. } => "dead-code",
+        Commands::Neighborhood { .. } => "neighborhood",
+        Commands::Status => "status",
+        Commands::SessionStart { .. } => "session-start",
+        Commands::Languages => "languages",
+        Commands::AddLanguage { .. } => "add-language",
+    }
 }
 
 fn cmd_languages(base: &Path) -> Result<()> {

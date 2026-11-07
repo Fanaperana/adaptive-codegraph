@@ -19,6 +19,8 @@ use crate::model::{Symbol, SymbolId};
 use crate::query::{self, display_name, location};
 use crate::search::SearchIndex;
 use crate::store::Store;
+use crate::text::{TextHit, TextIndex, TextQuery};
+use serde::Serialize;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -34,11 +36,73 @@ pub struct Workspace {
     search: Option<SearchIndex>,
     vectors: Option<VectorIndex>,
     embedder: Option<Box<dyn Embedder>>,
+    text: Option<TextIndex>,
     last_check: Option<Instant>,
     /// Minimum time between freshness checks.
     pub refresh_interval: Duration,
     /// Disable automatic refresh (e.g. for benchmarks).
     pub auto_refresh: bool,
+}
+
+/// A symbol as shown in structured (JSON) output.
+#[derive(Clone, Debug, Serialize)]
+pub struct SymbolRef {
+    pub name: String,
+    pub kind: String,
+    pub file: String,
+    /// 1-based line range.
+    pub line: u32,
+    pub end_line: u32,
+    pub id: String,
+}
+
+impl SymbolRef {
+    pub fn of(s: &Symbol) -> Self {
+        Self {
+            name: qualified(s),
+            kind: s.kind.clone(),
+            file: s.file.clone(),
+            line: s.span.start_line + 1,
+            end_line: s.span.end_line + 1,
+            id: s.id.to_hex(),
+        }
+    }
+}
+
+/// A text match with the symbol that contains it.
+#[derive(Clone, Debug, Serialize)]
+pub struct GrepHit {
+    #[serde(flatten)]
+    pub hit: TextHit,
+    pub symbol: Option<SymbolRef>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GrepResult {
+    pub matches: Vec<GrepHit>,
+    /// Files the regex ran on (after the trigram filter) and files indexed.
+    pub files_scanned: usize,
+    pub files_indexed: usize,
+}
+
+/// One call site.
+#[derive(Clone, Debug, Serialize)]
+pub struct CallSite {
+    pub caller: SymbolRef,
+    /// 1-based line of the call.
+    pub line: u32,
+    pub count: u32,
+    /// "certain", "inferred" or "guess" for linked calls; "ambiguous" or
+    /// "unresolved" for possible callers.
+    pub confidence: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CallersResult {
+    pub target: SymbolRef,
+    pub callers: Vec<CallSite>,
+    /// Calls to the same name the resolver could not link to one target.
+    pub possible: Vec<CallSite>,
 }
 
 /// How a symbol argument was resolved.
@@ -63,6 +127,7 @@ impl Workspace {
             search: None,
             vectors: None,
             embedder: None,
+            text: None,
             last_check: None,
             refresh_interval: Duration::from_secs(2),
             auto_refresh: true,
@@ -283,35 +348,90 @@ impl Workspace {
         }
     }
 
+    /// Direct callers of a symbol, plus calls to the same name that could
+    /// not be linked (possible callers). `Err` holds a message for the user.
+    pub fn callers_data(&self, name: &str) -> Result<CallersResult, String> {
+        let id = self.resolve_or_message(name)?;
+        let store = self.store();
+        let s = store.get(&id).unwrap();
+        let mut callers: Vec<CallSite> = store
+            .edges_in(&id)
+            .into_iter()
+            .filter(|(x, e)| matches!(e.kind.as_str(), "calls" | "renders") && x.kind != "file")
+            .map(|(x, e)| CallSite {
+                caller: SymbolRef::of(x),
+                line: e.line + 1,
+                count: e.count,
+                confidence: match e.confidence {
+                    3 => "certain",
+                    2 => "inferred",
+                    _ => "guess",
+                },
+            })
+            .collect();
+        callers.sort_by(|a, b| (&a.caller.file, a.line).cmp(&(&b.caller.file, b.line)));
+        let linked: std::collections::HashSet<String> = callers.iter().map(|c| c.caller.id.clone()).collect();
+        let mut possible: Vec<CallSite> = store
+            .unlinked
+            .iter()
+            .filter(|u| u.name == s.name)
+            .filter_map(|u| store.get(&u.from).map(|x| (u, x)))
+            .filter(|(_, x)| x.kind != "file" && !linked.contains(&x.id.to_hex()))
+            .map(|(u, x)| CallSite {
+                caller: SymbolRef::of(x),
+                line: u.line + 1,
+                count: 1,
+                confidence: if u.ambiguous { "ambiguous" } else { "unresolved" },
+            })
+            .collect();
+        possible.sort_by(|a, b| (&a.caller.file, a.line).cmp(&(&b.caller.file, b.line)));
+        possible.dedup_by(|a, b| a.caller.id == b.caller.id && a.line == b.line);
+        Ok(CallersResult { target: SymbolRef::of(s), callers, possible })
+    }
+
     pub fn callers_text(&self, name: &str, depth: usize) -> String {
+        if depth <= 1 {
+            return match self.callers_data(name) {
+                Ok(r) => format_callers(&r),
+                Err(m) => m,
+            };
+        }
         let id = match self.resolve_or_message(name) {
             Ok(id) => id,
             Err(m) => return m,
         };
         let store = self.store();
-        let s = store.get(&id).unwrap();
-        if depth <= 1 {
-            let mut v: Vec<_> = store
-                .edges_in(&id)
-                .into_iter()
-                .filter(|(x, e)| matches!(e.kind.as_str(), "calls" | "renders") && x.kind != "file")
-                .collect();
-            v.sort_by(|a, b| (&a.0.file, a.1.line).cmp(&(&b.0.file, b.1.line)));
-            if v.is_empty() {
-                return format!("Nothing in the project calls {} ({}).\n", display_name(s), location(s));
-            }
-            let mut out = format!("{} callers of {} ({}):\n", v.len(), display_name(s), location(s));
-            for (x, e) in v {
-                let q = if e.confidence < 3 { "  (inferred)" } else { "" };
-                let n = if e.count > 1 { format!(" ×{}", e.count) } else { String::new() };
-                let _ = writeln!(out, "  {} - {}:{}{n}{q}", qualified(x), x.file, e.line + 1);
-            }
-            return out;
-        }
         let entries = insight::impact_with(store, id, depth, 200, false)
             .into_iter()
             .collect::<Vec<_>>();
         insight::format_impact(store, id, &entries, depth)
+    }
+
+    /// Literal or regex search over every text file (code, config, docs),
+    /// each match tagged with the symbol that contains it. The text index is
+    /// refreshed first, so results match the files on disk.
+    pub fn grep(&mut self, q: &TextQuery) -> anyhow::Result<GrepResult> {
+        let index_dir = self.index_dir();
+        let text = self.text.get_or_insert_with(|| TextIndex::load(&index_dir));
+        text.refresh(&self.config, &self.base, &index_dir)?;
+        let r = text.search(q)?;
+        let store = self.store.as_ref();
+        let matches = r
+            .hits
+            .into_iter()
+            .map(|hit| {
+                let symbol = store.and_then(|s| enclosing(s, &hit.file, hit.line - 1)).map(SymbolRef::of);
+                GrepHit { hit, symbol }
+            })
+            .collect();
+        Ok(GrepResult { matches, files_scanned: r.candidates, files_indexed: r.files })
+    }
+
+    /// Read changed files into the text index now (normally done lazily).
+    pub fn refresh_text(&mut self) -> anyhow::Result<usize> {
+        let index_dir = self.index_dir();
+        let text = self.text.get_or_insert_with(|| TextIndex::load(&index_dir));
+        text.refresh(&self.config, &self.base, &index_dir)
     }
 
     pub fn callees_text(&self, name: &str) -> String {
@@ -465,6 +585,103 @@ impl Workspace {
         }
         out
     }
+}
+
+/// The innermost non-file symbol in `file` whose lines contain `line` (0-based).
+fn enclosing<'a>(store: &'a Store, file: &str, line: u32) -> Option<&'a Symbol> {
+    store
+        .by_file
+        .get(file)?
+        .iter()
+        .filter_map(|id| store.get(id))
+        .filter(|s| s.kind != "file" && s.span.start_line <= line && line <= s.span.end_line)
+        .min_by_key(|s| s.span.end_line - s.span.start_line)
+}
+
+fn format_callers(r: &CallersResult) -> String {
+    let t = &r.target;
+    let mut out = String::new();
+    if r.callers.is_empty() {
+        let _ = writeln!(out, "Nothing in the project calls {} ({}:{}).", t.name, t.file, t.line);
+    } else {
+        let _ = writeln!(out, "{} callers of {} ({}:{}):", r.callers.len(), t.name, t.file, t.line);
+        for c in &r.callers {
+            let q = if c.confidence != "certain" { "  (inferred)" } else { "" };
+            let n = if c.count > 1 { format!(" ×{}", c.count) } else { String::new() };
+            let _ = writeln!(out, "  {} - {}:{}{n}{q}", c.caller.name, c.caller.file, c.line);
+        }
+    }
+    if !r.possible.is_empty() {
+        const SHOW: usize = 8;
+        let _ = writeln!(
+            out,
+            "Possible callers ({}): calls to `{}` that could not be linked to one target:",
+            r.possible.len(),
+            t.name.rsplit("::").next().unwrap_or(&t.name)
+        );
+        for c in r.possible.iter().take(SHOW) {
+            let _ = writeln!(out, "  {} - {}:{}  ({})", c.caller.name, c.caller.file, c.line, c.confidence);
+        }
+        if r.possible.len() > SHOW {
+            let _ = writeln!(out, "  … +{} more", r.possible.len() - SHOW);
+        }
+    }
+    out
+}
+
+/// Grep matches grouped by file, then by containing symbol. `limit` caps
+/// the lines shown (0 = all).
+pub fn format_grep(r: &GrepResult, limit: usize) -> String {
+    let mut out = String::new();
+    if r.matches.is_empty() {
+        let _ = writeln!(out, "No matches ({} files searched).", r.files_indexed);
+        return out;
+    }
+    let files: std::collections::BTreeSet<&str> = r.matches.iter().map(|m| m.hit.file.as_str()).collect();
+    let _ = writeln!(
+        out,
+        "{} matching lines in {} files ({} of {} files scanned):",
+        r.matches.len(),
+        files.len(),
+        r.files_scanned,
+        r.files_indexed
+    );
+    let shown = if limit == 0 { r.matches.len() } else { limit.min(r.matches.len()) };
+    let mut file = "";
+    let mut sym: Option<&str> = None;
+    for m in &r.matches[..shown] {
+        if m.hit.file != file {
+            file = &m.hit.file;
+            sym = None;
+            let _ = writeln!(out, "{file}");
+        }
+        let this = m.symbol.as_ref().map(|s| s.id.as_str()).unwrap_or("");
+        if sym != Some(this) {
+            sym = Some(this);
+            match &m.symbol {
+                Some(s) => {
+                    let _ = writeln!(out, "  {} ({}, {}-{})", s.name, s.kind, s.line, s.end_line);
+                }
+                None => {
+                    let _ = writeln!(out, "  (top level)");
+                }
+            }
+        }
+        let _ = writeln!(out, "    {}: {}", m.hit.line, m.hit.text.trim());
+    }
+    if shown < r.matches.len() {
+        let _ = writeln!(out, "… +{} more lines (raise the limit or narrow with a path)", r.matches.len() - shown);
+    }
+    out
+}
+
+/// One `file:line:column:text` row per match, like ripgrep's `--vimgrep`.
+pub fn format_grep_flat(r: &GrepResult) -> String {
+    let mut out = String::new();
+    for m in &r.matches {
+        let _ = writeln!(out, "{}:{}:{}:{}", m.hit.file, m.hit.line, m.hit.column, m.hit.text);
+    }
+    out
 }
 
 /// `Owner::name` (or just `name`).

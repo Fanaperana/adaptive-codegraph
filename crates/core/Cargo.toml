@@ -33,6 +33,8 @@ thiserror = { workspace = true }
 rayon = { workspace = true }
 tracing = { workspace = true }
 regex-lite = { workspace = true }
+regex = { workspace = true }
+regex-syntax = { workspace = true }
 streaming-iterator = { workspace = true }
 
 [dependencies.fastembed]

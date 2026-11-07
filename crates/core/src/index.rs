@@ -107,11 +107,11 @@ pub fn full_index(
 }
 
 /// A file found on disk.
-struct DiskFile {
-    abs: PathBuf,
-    rel: String,
-    mtime: u128,
-    size: u64,
+pub(crate) struct DiskFile {
+    pub abs: PathBuf,
+    pub rel: String,
+    pub mtime: u128,
+    pub size: u64,
 }
 
 /// Bring the index up to date. With `prev = None` everything is rebuilt.
@@ -437,6 +437,31 @@ fn collect_files(
     registry: &ExtractorRegistry,
     base: &Path,
 ) -> anyhow::Result<Vec<DiskFile>> {
+    let files = walk_files(config, base, config.max_file_bytes, &|p: &Path| {
+        p.extension()
+            .and_then(|e| e.to_str())
+            .map(|ext| registry.for_extension(ext).is_some())
+            .unwrap_or(false)
+    })?;
+    if files.len() > config.max_files {
+        anyhow::bail!(
+            "{} has {} source files (limit {}). Index a sub-folder, or set `roots` / `max_files` in .adaptive-codegraph.toml.",
+            base.display(),
+            files.len(),
+            config.max_files
+        );
+    }
+    Ok(files)
+}
+
+/// Every file under the configured roots that `keep` accepts, honouring
+/// .gitignore, hidden files, `exclude` globs and a size limit. Sorted by path.
+pub(crate) fn walk_files(
+    config: &Config,
+    base: &Path,
+    max_bytes: u64,
+    keep: &dyn Fn(&Path) -> bool,
+) -> anyhow::Result<Vec<DiskFile>> {
     let mut gs = globset::GlobSetBuilder::new();
     for pat in &config.exclude {
         if let Ok(g) = globset::Glob::new(pat) {
@@ -465,11 +490,7 @@ fn collect_files(
                 continue;
             }
             let path = entry.path();
-            if path.starts_with(&index_dir) {
-                continue;
-            }
-            let Some(ext) = path.extension().and_then(|e| e.to_str()) else { continue };
-            if registry.for_extension(ext).is_none() {
+            if path.starts_with(&index_dir) || !keep(path) {
                 continue;
             }
             let rel = rel_path(base, path);
@@ -477,7 +498,7 @@ fn collect_files(
                 continue;
             }
             let Ok(meta) = entry.metadata() else { continue };
-            if meta.len() > config.max_file_bytes {
+            if meta.len() > max_bytes {
                 tracing::debug!("skipping large file {rel} ({} bytes)", meta.len());
                 continue;
             }
@@ -499,14 +520,6 @@ fn collect_files(
         }
     }
     files.sort_by(|a, b| a.rel.cmp(&b.rel));
-    if files.len() > config.max_files {
-        anyhow::bail!(
-            "{} has {} source files (limit {}). Index a sub-folder, or set `roots` / `max_files` in .adaptive-codegraph.toml.",
-            base.display(),
-            files.len(),
-            config.max_files
-        );
-    }
     Ok(files)
 }
 

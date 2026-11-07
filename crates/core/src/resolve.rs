@@ -46,6 +46,20 @@ pub struct ResolveStats {
     pub unresolved: usize,
 }
 
+/// A call the resolver could not link to one target: its name matched
+/// several symbols, or none it could prove. Kept so `callers` can list it
+/// as a possible caller instead of dropping it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Unlinked {
+    /// Innermost symbol containing the call.
+    pub from: SymbolId,
+    pub name: String,
+    /// 0-based line.
+    pub line: u32,
+    /// `true` when several targets matched, `false` when none did.
+    pub ambiguous: bool,
+}
+
 /// A package / crate / module root declared by a manifest
 /// (`Cargo.toml`, `go.mod`, `package.json`).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -281,8 +295,8 @@ impl<'a> Resolver<'a> {
     }
 
     /// Resolve every raw reference and import into edges.
-    pub fn resolve_all(&self) -> (Vec<Edge>, ResolveStats) {
-        type Out = (Vec<(SymbolId, SymbolId, String, u8, u32)>, ResolveStats);
+    pub fn resolve_all(&self) -> (Vec<Edge>, ResolveStats, Vec<Unlinked>) {
+        type Out = (Vec<(SymbolId, SymbolId, String, u8, u32)>, ResolveStats, Vec<Unlinked>);
         let per_file: Vec<Out> = (0..self.files.len())
             .into_par_iter()
             .map(|fi| self.resolve_file(fi))
@@ -290,7 +304,9 @@ impl<'a> Resolver<'a> {
 
         let mut stats = ResolveStats::default();
         let mut merged: AHashMap<(SymbolId, SymbolId, String), Edge> = AHashMap::new();
-        for (edges, s) in per_file {
+        let mut unlinked = Vec::new();
+        for (edges, s, u) in per_file {
+            unlinked.extend(u);
             stats.refs += s.refs;
             for i in 0..4 {
                 stats.resolved[i] += s.resolved[i];
@@ -321,12 +337,13 @@ impl<'a> Resolver<'a> {
         }
         let mut edges: Vec<Edge> = merged.into_values().collect();
         edges.sort_by(|a, b| (a.from, a.to, &a.kind).cmp(&(b.from, b.to, &b.kind)));
-        (edges, stats)
+        (edges, stats, unlinked)
     }
 
-    fn resolve_file(&self, fi: usize) -> (Vec<(SymbolId, SymbolId, String, u8, u32)>, ResolveStats) {
+    fn resolve_file(&self, fi: usize) -> (Vec<(SymbolId, SymbolId, String, u8, u32)>, ResolveStats, Vec<Unlinked>) {
         let info = &self.files[fi];
         let mut out = Vec::new();
+        let mut unlinked = Vec::new();
         let mut stats = ResolveStats::default();
 
         // Import edges: file → imported symbol / module file.
@@ -362,8 +379,17 @@ impl<'a> Resolver<'a> {
                     out.push((r.from, to, r.kind.clone(), conf, r.line));
                 }
                 Target::External => stats.external += 1,
-                Target::Ambiguous => stats.ambiguous += 1,
-                Target::Unknown => stats.unresolved += 1,
+                Target::Ambiguous | Target::Unknown => {
+                    let ambiguous = matches!(t, Target::Ambiguous);
+                    if ambiguous {
+                        stats.ambiguous += 1;
+                    } else {
+                        stats.unresolved += 1;
+                    }
+                    if matches!(r.kind.as_str(), "calls" | "renders") {
+                        unlinked.push(Unlinked { from: r.from, name: r.name.clone(), line: r.line, ambiguous });
+                    }
+                }
             }
         }
 
@@ -395,7 +421,7 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
-        (out, stats)
+        (out, stats, unlinked)
     }
 
     fn resolve_ref(&self, fi: usize, r: &RawRef) -> Target {
@@ -1109,7 +1135,7 @@ pub fn resolve(
     facts: &BTreeMap<String, FileFacts>,
     profiles: &HashMap<String, LangProfile>,
     packages: &[Package],
-) -> (Vec<Edge>, ResolveStats) {
+) -> (Vec<Edge>, ResolveStats, Vec<Unlinked>) {
     Resolver::new(facts, profiles, packages).resolve_all()
 }
 

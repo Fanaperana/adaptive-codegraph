@@ -33,6 +33,7 @@ Prefer it over grep/glob for questions about code structure:
 - Reading code: `source` for one symbol, `outline` for a file's structure — cheaper than reading whole files.
 - New to the repo: `repo_map` (the most depended-on code, ranked).
 - How does A reach B: `call_path`.
+- Text that is not a symbol (strings, error messages, comments, config keys, docs, any file type): `text_search` instead of grep. Matches come grouped by the function that contains them.
 Symbols can be given as `name`, `Type::method`, `Type.method`, or an ID from earlier output. \
 Edges marked (inferred) or ? are lower confidence. Dynamic calls (callbacks, reflection) may be missing.";
 
@@ -158,6 +159,16 @@ fn tools_list() -> Value {
                 "task": {"type": "string", "description": "What you are trying to do or understand, or a symbol name"},
                 "budget_tokens": {"type": "integer", "default": 2000}
             }), &["task"], true),
+        tool("text_search", "Search text",
+            "Regex or literal search over every file in the repository (code, config, docs, any language), served from an index that is kept current. Each match is grouped under the function or class that contains it. Use it instead of grep for strings, error messages, comments, config keys and TODOs.",
+            json!({
+                "pattern": {"type": "string", "description": "Regex (Rust syntax) or, with fixed=true, a literal string"},
+                "fixed": {"type": "boolean", "default": false, "description": "Treat the pattern as a literal string"},
+                "ignore_case": {"type": "boolean", "default": false},
+                "word": {"type": "boolean", "default": false, "description": "Match whole words only"},
+                "path": {"type": "string", "description": "Only files under this path prefix, or matching this glob (e.g. *.toml)"},
+                "limit": {"type": "integer", "default": 60, "description": "Most matching lines to show"}
+            }), &["pattern"], true),
         tool("explain", "Explain a symbol",
             "Everything known about one symbol: signature, doc, location, members, callers, callees, supertypes, subtypes/implementations, overrides, and types it uses.",
             json!({"symbol": symbol}), &["symbol"], true),
@@ -165,7 +176,7 @@ fn tools_list() -> Value {
             "Source code of one symbol with line numbers (long bodies are trimmed in the middle). Cheaper than reading the whole file.",
             json!({"symbol": symbol, "max_lines": {"type": "integer", "default": 150}}), &["symbol"], true),
         tool("callers", "Who calls this",
-            "Call sites of a function/method (file:line). With depth > 1, transitive callers grouped by distance.",
+            "Call sites of a function/method (file:line). Also lists possible callers: calls to the same name the resolver could not link to one target. With depth > 1, transitive callers grouped by distance.",
             json!({"symbol": symbol, "depth": {"type": "integer", "default": 1}}), &["symbol"], true),
         tool("callees", "What this calls",
             "Functions/methods called by a symbol, in order, with their locations.",
@@ -218,6 +229,7 @@ fn call_tool(ws: &mut Workspace, name: &str, args: &Value) -> anyhow::Result<Str
     if name == "reindex" || name == "index" || name == "incremental_index" {
         let full = args.get("full").and_then(|v| v.as_bool()).unwrap_or(name == "index");
         let note = ws.refresh(full)?.unwrap_or_else(|| "Index is up to date.".into());
+        ws.refresh_text()?;
         return Ok(format!("{note}\n{}", ws.status_text()));
     }
     let note = ws.ensure_fresh()?;
@@ -230,6 +242,18 @@ fn call_tool(ws: &mut Workspace, name: &str, args: &Value) -> anyhow::Result<Str
             s(args, "path"),
         )?,
         "context" => ws.context_text(need(args, &["task", "query"])?, n(args, "budget_tokens", 2000))?,
+        "text_search" | "grep" => {
+            let b = |k: &str| args.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+            let q = adaptive_codegraph_core::text::TextQuery {
+                pattern: need(args, &["pattern", "query"])?.to_string(),
+                fixed: b("fixed"),
+                ignore_case: b("ignore_case"),
+                word: b("word"),
+                path: s(args, "path").map(str::to_string),
+            };
+            let r = ws.grep(&q)?;
+            adaptive_codegraph_core::service::format_grep(&r, n(args, "limit", 60))
+        }
         "explain" | "get_symbol" => ws.explain_text(need(args, &sym_keys)?),
         "source" => ws.source_text(need(args, &sym_keys)?, n(args, "max_lines", 150)),
         "callers" | "find_callers" => ws.callers_text(need(args, &sym_keys)?, n(args, "depth", 1)),

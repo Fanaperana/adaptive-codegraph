@@ -5,7 +5,7 @@
 
 use crate::extract::LangProfile;
 use crate::model::{Edge, FileFacts, Symbol, SymbolId};
-use crate::resolve::{self, Package, ResolveStats};
+use crate::resolve::{self, Package, ResolveStats, Unlinked};
 use ahash::AHashMap;
 use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 use petgraph::visit::{EdgeRef, IntoEdgeReferences};
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
 /// Bump when the on-disk format changes; older indexes must be rebuilt.
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 
 /// Data carried by a graph edge.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -36,6 +36,7 @@ struct SerializedStore {
     profiles: HashMap<String, LangProfile>,
     packages: Vec<Package>,
     stats: ResolveStats,
+    unlinked: Vec<Unlinked>,
 }
 
 /// The in-memory graph with side indexes.
@@ -51,6 +52,8 @@ pub struct Store {
     /// Package / crate roots (for cross-package imports).
     pub packages: Vec<Package>,
     pub stats: ResolveStats,
+    /// Calls the resolver could not link (possible callers).
+    pub unlinked: Vec<Unlinked>,
 }
 
 impl Store {
@@ -92,11 +95,12 @@ impl Store {
         for s in syms {
             self.insert_symbol(s);
         }
-        let (edges, stats) = resolve::resolve(&self.facts, &self.profiles, &self.packages);
+        let (edges, stats, unlinked) = resolve::resolve(&self.facts, &self.profiles, &self.packages);
         for e in edges {
             self.add_edge_raw(e);
         }
         self.stats = stats;
+        self.unlinked = unlinked;
     }
 
     /// Insert a symbol into the graph. Returns the node index. Inserting an
@@ -311,6 +315,7 @@ impl Store {
             profiles: self.profiles.clone(),
             packages: self.packages.clone(),
             stats: self.stats.clone(),
+            unlinked: self.unlinked.clone(),
         };
         Ok(bincode::serialize(&ss)?)
     }
@@ -328,6 +333,7 @@ impl Store {
             profiles: ss.profiles,
             packages: ss.packages,
             stats: ss.stats,
+            unlinked: ss.unlinked,
             ..Default::default()
         };
         let syms: Vec<Symbol> = store.facts.values().flat_map(|f| f.symbols.iter().cloned()).collect();
