@@ -89,6 +89,13 @@ pub fn resolve_symbols<'a>(store: &'a Store, query: &str) -> Vec<&'a Symbol> {
     };
     // Accept "file.rs::name" forms: the '.' replacement broke the extension.
     let raw_suffix = query.trim();
+    // "path/file.rs::name" also finds a method `name` in that file without
+    // its type (`path/file.rs::Type::name` is the full form).
+    let file_scope = raw_suffix
+        .rsplit_once("::")
+        .map(|(s, _)| s.replace('\\', "/"))
+        .filter(|s| s.contains('/') || s.rsplit_once('.').is_some_and(|(_, ext)| !ext.is_empty() && ext.len() <= 5 && ext.chars().all(|c| c.is_ascii_alphanumeric())))
+        .map(|s| s.trim_start_matches("./").to_string());
 
     let mut matches: Vec<&Symbol> = store
         .find_by_name_exact(name)
@@ -100,6 +107,10 @@ pub fn resolve_symbols<'a>(store: &'a Store, query: &str) -> Vec<&'a Symbol> {
                 full.ends_with(&format!("{sc}::{name}"))
                     || s.fqname.ends_with(raw_suffix)
                     || s.fqname.replace('.', "::").ends_with(q)
+                    || file_scope.as_deref().is_some_and(|fs| {
+                        let file = s.file.replace('\\', "/");
+                        file == fs || file.ends_with(&format!("/{fs}"))
+                    })
             }
         })
         .collect();
@@ -304,6 +315,24 @@ mod tests {
         assert_eq!(r[0].file, "b.rs");
         let r = resolve_symbols(&store, "Cache.save");
         assert_eq!(r.len(), 1);
+    }
+
+    #[test]
+    fn resolve_symbol_file_qualified_method_without_type() {
+        let mut store = Store::new();
+        for (file, ty) in [("src/a/store.rs", "Store"), ("src/b/cache.rs", "Cache")] {
+            let mut s = make_sym("save", file);
+            s.container = Some(ty.into());
+            s.fqname = format!("{file}::{ty}::save");
+            s.id = crate::model::SymbolId::new("rust", "method", &s.fqname, file);
+            store.insert_symbol(s);
+        }
+        let r = resolve_symbols(&store, "src/b/cache.rs::save");
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].file, "src/b/cache.rs");
+        assert_eq!(resolve_symbols(&store, "cache.rs::save").len(), 1);
+        assert_eq!(resolve_symbols(&store, "src/b/cache.rs::Cache::save").len(), 1);
+        assert_eq!(resolve_symbols(&store, "other.rs::save").len(), 0);
     }
 
     #[test]

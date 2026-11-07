@@ -1,0 +1,211 @@
+{
+  "fixtures": {
+    "ripgrep": {
+      "callers_bytes": 19828.0,
+      "callers_secs": 3.091465299963602,
+      "callers_calls": 84.0,
+      "callers_lines": 357.0,
+      "callers_tp": 110.0,
+      "callers_pred": 311.0,
+      "callers_truth": 115.0,
+      "impact_tp": 166.0,
+      "impact_pred": 444.0,
+      "impact_truth": 168.0,
+      "impact_bytes": 56919.0,
+      "impact_secs": 15.192548999912106,
+      "impact_calls": 426.0,
+      "callers_precision": 0.3536977491961415,
+      "callers_recall": 0.9565217391304348,
+      "impact_precision": 0.3738738738738739,
+      "impact_recall": 0.9880952380952381
+    },
+    "ast-grep": {
+      "callers_bytes": 6131.0,
+      "callers_secs": 22.236036099973717,
+      "callers_calls": 238.0,
+      "callers_lines": 147.0,
+      "callers_tp": 92.0,
+      "callers_pred": 125.0,
+      "callers_truth": 115.0,
+      "impact_tp": 141.0,
+      "impact_pred": 216.0,
+      "impact_truth": 168.0,
+      "impact_bytes": 13192.0,
+      "impact_secs": 71.66854569998395,
+      "impact_calls": 801.0,
+      "callers_precision": 0.736,
+      "callers_recall": 0.8,
+      "impact_precision": 0.6527777777777778,
+      "impact_recall": 0.8392857142857143
+    },
+    "adaptive-codegraph": {
+      "callers_bytes": 8251.0,
+      "callers_secs": 18.482882099982817,
+      "callers_calls": 98.0,
+      "callers_lines": 113.0,
+      "callers_tp": 112.0,
+      "callers_pred": 113.0,
+      "callers_truth": 115.0,
+      "impact_tp": 155.0,
+      "impact_pred": 177.0,
+      "impact_truth": 168.0,
+      "impact_bytes": 20958.0,
+      "impact_secs": 18.516488499983097,
+      "impact_calls": 98.0,
+      "callers_precision": 0.9911504424778761,
+      "callers_recall": 0.9739130434782609,
+      "impact_precision": 0.8757062146892656,
+      "impact_recall": 0.9226190476190477
+    }
+  },
+  "repo": {
+    "sample": [
+      [
+        "crates/config/src/rule/referent_rule.rs",
+        "defined_vars",
+        300
+      ],
+      [
+        "crates/wasm/src/sg_node.rs",
+        "follows",
+        220
+      ],
+      [
+        "crates/cli/src/lang/injection.rs",
+        "extract_custom_inject",
+        145
+      ],
+      [
+        "crates/cli/src/utils/mod.rs",
+        "file_too_large",
+        199
+      ],
+      [
+        "crates/cli/src/utils/debug_query.rs",
+        "get_mapping",
+        20
+      ],
+      [
+        "crates/config/src/rule_core.rs",
+        "get_deserialize_env",
+        63
+      ],
+      [
+        "crates/cli/src/verify/find_file.rs",
+        "deserialize_test_yaml",
+        137
+      ],
+      [
+        "crates/cli/src/verify/reporter.rs",
+        "style",
+        334
+      ],
+      [
+        "crates/language/src/parsers.rs",
+        "language_hcl",
+        52
+      ],
+      [
+        "crates/cli/src/custom_language.rs",
+        "canonical_config_path",
+        179
+      ],
+      [
+        "crates/cli/src/outline/output.rs",
+        "line_number_width",
+        238
+      ],
+      [
+        "crates/cli/src/new.rs",
+        "ask_dir",
+        46
+      ],
+      [
+        "crates/napi/src/sg_node.rs",
+        "parent",
+        322
+      ],
+      [
+        "crates/cli/src/utils/inspect.rs",
+        "run_trace_impl",
+        63
+      ],
+      [
+        "crates/napi/src/doc.rs",
+        "get_node_text",
+        166
+      ],
+      [
+        "crates/wasm/src/ts_types.rs",
+        "lift_error",
+        14
+      ],
+      [
+        "crates/core/src/matcher.rs",
+        "potential_kinds",
+        39
+      ],
+      [
+        "crates/config/src/rule/parameterized_util.rs",
+        "verify_parameterized_referent",
+        178
+      ],
+      [
+        "crates/pyo3/src/py_node.rs",
+        "is_named_leaf",
+        47
+      ],
+      [
+        "crates/core/src/source.rs",
+        "node_id",
+        39
+      ],
+      [
+        "crates/config/src/transform/string_case.rs",
+        "capitalize",
+        5
+      ],
+      [
+        "crates/napi/src/find_files.rs",
+        "call_sg_root",
+        114
+      ],
+      [
+        "crates/cli/src/outline/output.rs",
+        "print_signatures",
+        181
+      ],
+      [
+        "crates/core/src/matcher/kind.rs",
+        "is_invalid",
+        51
+      ],
+      [
+        "crates/outline/src/extractor.rs",
+        "node_line",
+        390
+      ]
+    ],
+    "index_secs": 14.336821100005182,
+    "per_query": {
+      "ripgrep": {
+        "lines": 24.28,
+        "bytes": 2134.64,
+        "secs": 0.047049711997970006,
+        "calls": 1.0
+      },
+      "ast-grep": {
+        "lines": 7.24,
+        "bytes": 661.76,
+        "secs": 0.3674492960021598,
+        "calls": 3.0
+      },
+      "adaptive-codegraph": {
+        "lines": 1.12,
+        "bytes": 208.28,
+        "secs": 0.2545190120005282,
+        "calls": 1.12
+      }
+    }
+  }
+}

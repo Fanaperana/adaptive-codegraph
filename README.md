@@ -58,10 +58,11 @@ Measured with the included benchmark ([`bench/RESULTS.md`](bench/RESULTS.md)) on
 
 | Task | Without a code graph | With adaptive-codegraph |
 |---|---|---|
-| **"Who calls X?"** (24 functions in [ast-grep](https://github.com/ast-grep/ast-grep)) | `grep -w X`: **11.8 lines** of mixed definitions, imports, comments and same-named symbols, which you then read and filter | `callers X`: **3.5 exact call sites** with the calling function and `file:line`, in **2.7× less text** |
+| **"Who calls X?"** (ground-truth fixtures) | `rg -w X`: finds 96% of callers, but **65% of what it returns is noise** (definitions, imports, same-named methods). ast-grep: 74% precise, 80% recall, 3 patterns per question | `callers X`: **99% precise, 97% recall**, one call |
+| **"Who calls X?"** (25 functions in [ast-grep](https://github.com/ast-grep/ast-grep)'s own source) | `rg`: **24 lines / ~530 tokens** per question · ast-grep: **7 lines / ~165 tokens** | **1.1 lines / ~50 tokens**: the callers of *that* function, not of everything with the same name |
 | **"Where's the code that does X?"** (24 natural-language questions) | No direct way: guess keywords, grep, open files | Correct function **#1 for 71%** and **top-5 for 88%** of questions (MRR **0.78**, vs 0.32 for name-only search) |
 | **"Show me what I need to work on X"** | Find the file, then read all of it (avg **10 KB**, ~2,500 tokens), then chase callers | `context`: the target's source is in a **~1,200-token** bundle for **88%** of questions, plus its callers/callees' signatures |
-| **"What breaks if I change X?"** | Repeated greps by hand, missing indirect and interface callers | `impact`: transitive dependents and tests in one call. **Precision 1.00, recall 0.97** against ground truth |
+| **"What breaks if I change X?"** (4 hops) | Search callers, then their callers, and so on: **426 rg searches** (37% precise) or **801 ast-grep searches** (65% precise) across the fixtures | `impact`: **98 calls in total**, one per question, with transitive dependents and tests to run. Static mode: **precision 1.00, recall 0.97** |
 | **Exploring around a symbol** (vscode, 6.3k files) | – | Neighborhood answers average **9 KB** (the old version returned **500 KB**) |
 
 **Why this matters for an AI assistant:** fewer tool calls, fewer tokens spent reading files that don't matter, and no confidently wrong answers built on a bad call graph. Edits come with the full list of callers to update and tests to run.
@@ -219,7 +220,44 @@ flowchart LR
 | Duplicate IDs / duplicate edges on vscode `src/` | 57k / 197k | **0 / 0** |
 | Full index, vscode `src/` (6.3k files, lexical) | 6.7 s | 9.7 s (doing far more) |
 
-Reproduce:
+### Compared with grep and ast-grep
+
+The same questions, asked the way an agent would ask each tool: `rg -w name`; ast-grep call patterns (`name($$$)`, `$O.name($$$)`, `$P::name($$$)` / `new name($$$)`); codegraph `callers` / `impact`. Every `file:line` returned is credited to the function that contains it, then scored against the fixtures' hand-labelled call edges (7 projects, 4 languages, 115 edges).
+
+| Who calls X? | Precision | Recall | Tool calls | Output |
+|---|---|---|---|---|
+| ripgrep | 0.35 | 0.96 | 84 | 19.4 KB |
+| ast-grep | 0.74 | 0.80 | 238 | 6.0 KB |
+| **adaptive-codegraph** | **0.99** | **0.97** | 98 | 8.1 KB |
+
+| What does a change to X affect? (4 hops) | Precision | Recall | Tool calls | Output |
+|---|---|---|---|---|
+| ripgrep, hop by hop | 0.37 | 0.99 | 426 | 55.6 KB |
+| ast-grep, hop by hop | 0.65 | 0.84 | 801 | 12.9 KB |
+| **adaptive-codegraph** `impact` | **0.88*** | **0.92** | **98** | 20.5 KB |
+
+On a real repository with no ground truth ([ast-grep](https://github.com/ast-grep/ast-grep) at `cab768cd`, 25 sampled non-test functions), the average answer to "who calls X?":
+
+| | Lines returned | Tokens to read | Time | Tool calls |
+|---|---|---|---|---|
+| ripgrep | 24.3 | ~534 | 47 ms | 1.0 |
+| ast-grep | 7.2 | ~165 | 367 ms | 3.0 |
+| **adaptive-codegraph** | **1.1** | **~52** | 255 ms | 1.1 |
+
+**How to read this:**
+- grep finds nearly everything, but most of what it returns is not a call to *this* function: definitions, imports, comments, and other methods with the same name. The agent has to read and filter all of it.
+- ast-grep removes the text noise, but it matches syntax, not meaning: `x.save()` matches every `save` method, and calls through `self.repo`, imports or aliases are either all matched or all missed. Each question needs several patterns.
+- codegraph resolves which function a call goes to, so it answers for the exact symbol and gives transitive impact in one call. Its few misses are calls that need flow analysis (see limits below).
+- \* `impact` also reports callers that reach X through an interface or base class. These are real effects that the call-only ground truth doesn't count; static mode scores 1.00 / 0.97.
+- grep is faster per query and needs no index. codegraph builds its index once (~15 s here, with embeddings) and keeps it fresh incrementally. Its CLI times above include loading the index, which the MCP server keeps in memory.
+
+Reproduce with [`bench/compare/compare.py`](bench/compare/compare.py) (needs `rg`, `ast-grep` and `adaptive-codegraph` on PATH):
+
+```bash
+python bench/compare/compare.py --ast-grep ast-grep --repo /path/to/ast-grep --json bench/results/compare.json
+```
+
+### Reproduce the accuracy benchmark
 
 ```bash
 cargo run --release -p adaptive-codegraph-bench -- --label mine --verbose \
