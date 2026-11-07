@@ -168,7 +168,7 @@ Building this comparison found one codegraph bug, now fixed:
 
 Queries come from the repository with a fixed seed: 10 identifiers from
 definitions (whole word), 5 string literals (literal), `TODO`, `fixme`
-(ignore case), `\d+\.\d+\.\d+` and `[A-Z][a-zA-Z]+Error` (no literal
+(ignore case), `\d+\.\d+\.\d+` and `\b[A-Z][a-zA-Z]+Error\b` (no literal
 for the trigram filter) and `https?://[a-z0-9.-]+`. Each tool runs each
 query 3 times; the table shows the median over queries of the median run.
 ripgrep's answer is the truth for agreement.
